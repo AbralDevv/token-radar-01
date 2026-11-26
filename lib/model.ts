@@ -176,6 +176,25 @@ export interface FarmStep {
   time: string;
 }
 
+/** Per-row costed farm verdict written to data.js (never to board.json). */
+export type VerdictLabel = 'Strong +EV' | 'Positive +EV' | 'Scale Needed' | 'Gas-Blocked';
+
+export interface FarmVerdict {
+  primary_chain: string;
+  deposit_usd: number;
+  hold_days: number;
+  gas_low_usd: number;
+  gas_high_usd: number;
+  gas_mid_usd: number;
+  active_hours: number;
+  gross_ev_usd: number;
+  net_after_gas_usd: number;
+  net_per_hour: number;
+  breakeven_deposit_usd: number;
+  capital_drag_usd: number;
+  verdict: VerdictLabel;
+}
+
 /** Per-row auditable valuation and token-odds arithmetic breakdown. */
 export interface ModelBreakdown {
   size_multiple: number;
@@ -248,6 +267,7 @@ export interface RadarRow {
   parent_factor: number;
   launch_odds: number;
   cat_log_odds: number;
+  farm: FarmVerdict;
 }
 
 /** Unranked live-token calibration peer shown in the separate Comps tab. */
@@ -330,7 +350,13 @@ export const EXCLUDED_LAUNCH_CATS = new Set([
 ]);
 
 export const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+export const round2 = (n: number): number => Math.round(n * 1e2) / 1e2;
 export const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+
+/** Sensitivity benchmark community share (5% TVL-pro-rata, illustrative model benchmark only). */
+export const FARM_BENCHMARK_SHARE = 0.05;
+/** Reference risk-free rate (4.5% APR) used to report transparent capital opportunity drag. */
+export const FARM_RISK_FREE_APR = 0.045;
 
 export function median(values: number[]): number {
   if (values.length === 0) return 0;
@@ -1017,6 +1043,58 @@ export function holdDaysFor(age: number | null): number {
   return 30;
 }
 
+/**
+ * Per-row costed farm economics derived strictly from the row's deposit tier, chain gas bounds,
+ * hold window, Steps 1-6 active hours, and probability-weighted implied launch value under an
+ * explicit 5% TVL-pro-rata sensitivity benchmark (never an airdrop promise).
+ */
+export function computeFarmVerdict(
+  p: SnapshotProtocol,
+  age: number | null,
+  impliedValueUsd: number,
+): FarmVerdict {
+  const cp = chainProfileOf(p.chains);
+  const deposit = capitalFor(p.tvl_usd, cp);
+  const hold = holdDaysFor(age);
+  const weeks = hold / 7;
+  const gasLow = round2(cp.prepLow + cp.entryLow + cp.weeklyLow * weeks);
+  const gasHigh = round2(cp.prepHigh + cp.entryHigh + cp.weeklyHigh * weeks);
+  const gasMid = round2((gasLow + gasHigh) / 2);
+  // Active operator hours match Steps 1-6 verbatim: 10m + 15m + 10m/wk + 5m/wk + 10m.
+  const activeHours = round2((35 + 15 * weeks) / 60);
+  const yieldRate = FARM_BENCHMARK_SHARE * (impliedValueUsd / Math.max(1, p.tvl_usd));
+  const grossEv = round2(deposit * yieldRate);
+  const netAfterGas = round2(grossEv - gasMid);
+  const netPerHour = round2(netAfterGas / activeHours);
+  const breakevenDeposit = Math.ceil(gasMid / Math.max(1e-9, yieldRate));
+  const capitalDrag = round2(deposit * FARM_RISK_FREE_APR * (hold / 365));
+
+  const verdict: VerdictLabel =
+    netPerHour >= 3 && deposit >= 2 * breakevenDeposit
+      ? 'Strong +EV'
+      : netPerHour > 0
+        ? 'Positive +EV'
+        : breakevenDeposit <= 50_000
+          ? 'Scale Needed'
+          : 'Gas-Blocked';
+
+  return {
+    primary_chain: cp.primary,
+    deposit_usd: deposit,
+    hold_days: hold,
+    gas_low_usd: gasLow,
+    gas_high_usd: gasHigh,
+    gas_mid_usd: gasMid,
+    active_hours: activeHours,
+    gross_ev_usd: grossEv,
+    net_after_gas_usd: netAfterGas,
+    net_per_hour: netPerHour,
+    breakeven_deposit_usd: breakevenDeposit,
+    capital_drag_usd: capitalDrag,
+    verdict,
+  };
+}
+
 /** Core protocol action tailored to DefiLlama category, protocol name, chain, and capital tier. */
 function coreActionFor(p: SnapshotProtocol, capital: number, cp: ChainProfile): { action: string; cadence: string; avoid: string } {
   const cat = (p.category ?? '').toLowerCase();
@@ -1312,6 +1390,22 @@ export function buildRadar(
     parent_factor: r.model.parent_factor,
     launch_odds: r.model.launch_odds,
     cat_log_odds: r.model.cat_log_odds,
+    farm: computeFarmVerdict(
+      {
+        slug: r.slug,
+        name: r.name,
+        category: r.category,
+        chains: r.chains,
+        tvl_usd: r.tvl_usd,
+        change_7d: r.change_7d,
+        mcap_usd: r.mcap_usd,
+        listed_at: r.listed_at,
+        gecko_id: r.gecko_id,
+        symbol: r.symbol,
+      },
+      r.age_days,
+      r.implied_value_usd,
+    ),
   }));
 
   const radar: RadarData = {
