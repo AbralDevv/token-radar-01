@@ -36,6 +36,10 @@
 //
 //   3. Expected Implied Launch Value:
 //      implied_value_usd = max(1, round(cond_value_usd * launch_odds))
+//
+//   4. Costed Farm Verdict (5% TVL-pro-rata sensitivity vs chain gas; verdictFor()):
+//      Strong +EV (net/hr >= $3 & deposit >= 2x break-even), Positive +EV (net/hr > $0),
+//      Scale Needed (break-even <= 10x deposit), Gas-Blocked (break-even > 10x deposit).
 
 /** One protocol entry from the sealed snapshot: exactly the ten fields it carries. */
 export interface SnapshotProtocol {
@@ -1053,13 +1057,13 @@ export function holdDaysFor(age: number | null): number {
   return 30;
 }
 
-/** Shared verdict rule for the headline deposit and every deposit tier. */
+/** Shared verdict rule for the headline deposit and every deposit tier (Gas-Blocked when break-even > 10x deposit). */
 export function verdictFor(netPerHour: number, deposit: number, breakevenDeposit: number): VerdictLabel {
   return netPerHour >= 3 && deposit >= 2 * breakevenDeposit
     ? 'Strong +EV'
     : netPerHour > 0
       ? 'Positive +EV'
-      : breakevenDeposit <= 50_000
+      : breakevenDeposit <= 10 * deposit
         ? 'Scale Needed'
         : 'Gas-Blocked';
 }

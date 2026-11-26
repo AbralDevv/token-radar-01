@@ -16,6 +16,8 @@
 //       - KEPT: Listed age (survival hazard), Category token rate (k=16), TVL scale, Chains
 //       - DROPPED: 7d TVL growth (negative snapshot-week market-beta artifact)
 //   [3] Implied Launch EV = max(1, round(TVL * clamp(size_mult * cat_mult, 0.015, 6.0) * launch_odds))
+//   [4] Costed Farm Verdict: Strong +EV (net/hr>=$3 & dep>=2x be), Positive +EV (net/hr>$0),
+//       Scale Needed (be<=10x dep), Gas-Blocked (be>10x dep).
 (() => {
   'use strict';
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -82,8 +84,8 @@
   };
   const holdDaysFor = (age) => (age == null ? 45 : age < 120 ? 60 : age < 365 ? 45 : 30);
 
-  /** Recompute per-row costed farm verdict (matches lib/model.ts computeFarmVerdict() verbatim). */
-  function verdictFor(nph, dep, be) { return nph >= 3 && dep >= 2 * be ? 'Strong +EV' : nph > 0 ? 'Positive +EV' : be <= 50000 ? 'Scale Needed' : 'Gas-Blocked'; }
+  /** Recompute per-row costed farm verdict (matches lib/model.ts verdictFor()/computeFarmVerdict() verbatim; Gas-Blocked when be > 10x dep). */
+  function verdictFor(nph, dep, be) { return nph >= 3 && dep >= 2 * be ? 'Strong +EV' : nph > 0 ? 'Positive +EV' : be <= 10 * dep ? 'Scale Needed' : 'Gas-Blocked'; }
   function computeFarmVerdict(row, impliedUsd) {
     const g = gasBoundsOf(row.chains), deposit = capitalFor(row.tvl_usd, g.p), hold = holdDaysFor(row.age_days), wks = hold / 7;
     const gasLow = round2(g.prepLo + g.entLo + g.wkLo * wks), gasHigh = round2(g.prepHi + g.entHi + g.wkHi * wks);
