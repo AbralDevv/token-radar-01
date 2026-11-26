@@ -76,14 +76,22 @@
   2. Export and pass `--muse-usage <file>` from `muse.db` (dry-run warned `0 usage rows attached to the bundle's 12 Muse app sessions`).
   3. Pass `--mcp <spec|none>`, `--provider <name>`, and `--effort <level>` to complete the run record.
 
+## Coordinator verification (2026-11-26 ~20:25 WIB, independent of agy output)
+- Fresh run `node main.ts` (MAKEFUN_INPUT_DIR/OUTPUT_DIR) reproduces the build: 198 rows, integrity `198 ranked + 416 live-token + 144 excluded = 758, 0 unaccounted`, `board.json` 424,944 B, `dossier.json` 1,131,717 B (text 59,330 B). Gate spot-check on the fresh output: rows 198/198 unique, ranks 1..198 consecutive, values non-increasing, 198 distinct ($287,827–$18,559,614), watchlist 40/40, steps 3–12 / 20–600 chars all pass, 3 screenshots 1280×800 ≤512 KiB, dashboard 4 files, 0 `http(s)://`. Top 5: bittensor-dtao $18,559,614; veda $14,110,656; steakhouse-financial $13,022,826; usdd $11,413,767; r25 $9,810,981.
+- Kit level independently confirmed: `0.1.0 (kit level 53, build 583bb588847f)`.
+- `check` (no transcripts) re-run by coordinator, verbatim: `4 passed, 1 failed, 15 skipped, 5 checked at submission` / `not ready: fix transcripts_present, then check again`. The 5 at-submission checks (repo_public, repo_owner, repo_created_after_open, commit_in_repo, duplicate_snapshot) all wait on the public GitHub repo.
+- Targeted `bundle --dry-run --no-discover --antigravity-dir ~/agy-accounts/akun1/antigravity-cli --mcp none --provider google --effort xhigh`: finds exactly the 3 Antigravity sessions (1ff8a7bf 3 turns = failed first -p attempt, cb427069 41 turns, ff6d771c 49 turns), system prompt in-session, 1 instruction file, MCP none. Only missing fact: `--harness-version` (agy 1.5.18). Warnings: 2 conversations with no workspace left out; 3 conversations' token usage lives only in `.db` protobuf (unpriced — "rejects nothing"). Default (non---no-discover) dry-run instead pulls 12 unrelated Muse-app sessions (minis/research) — do NOT use default discovery for the final bundle.
+- Dev rate vs house: NO dev grade exists yet (nothing submitted; no local judge run — SAMP/GLM judge endpoint/key not available in this session). Do NOT quote a dev rate. Closest proxies (not a dev rate): held-out walk-forward x2.61 vs x4.14 flat (1.59x tighter), LOO x3.40 vs x4.96 (1.46x tighter), odds LOO AUC 0.715.
+- NOT SUBMITTED. Blockers unchanged: no public GitHub repo; final bundle not yet built (needs parent to run muse.db SELECT after this turn ends + --parent-session chain + --harness-version 1.5.18).
+
 ## Next (Coordinator)
-1. Create public GitHub repo (created after `2026-11-14T10:00:00Z`), add required `README.md` with the 3 live make.fun badges + link, set GitHub About website to `https://make.fun/bounty/token-radar-01` and topic `makefun`, verify git author identity, and push `master`.
-2. Build final `transcripts.tar.gz` including both Antigravity sessions (`cb427069-…` + `ff6d771c-…`) and parent Muse sessions + `--muse-usage` + `--mcp` + `--provider` + `--effort`, then re-run `node cli/makefun.mjs check --kit . --repo /home/hatch/bounties/token-radar-01 --transcripts transcripts.tar.gz` and require **0 failed** (target 13+ passed / 0 failed).
+1. Create public GitHub repo (created after `2026-11-14T10:00:00Z`), add required `README.md` with the 3 live make.fun badges + link, set GitHub About website to `https://make.fun/bounty/token-radar-01` and topic `makefun`, verify git author identity, and push `master` (HEAD `a6037bc`).
+2. Build final `transcripts.tar.gz` AFTER this coordinator turn ends (usage rows are written on delivery): `node cli/makefun.mjs bundle --repo /home/hatch/bounties/token-radar-01 --out transcripts.tar.gz --no-discover --antigravity-dir /home/hatch/agy-accounts/akun1/antigravity-cli --mcp none --provider google --effort xhigh --harness-version 1.5.18 --parent-session <coordinator session file> --parent-session <parent orchestrator session file>` (nearest parent first; files under `/home/hatch/agents/agent-<id>/sessions/<id>.jsonl`). Then re-run `check` with `--transcripts transcripts.tar.gz` and require 0 failed before submitting.
 3. Submit via coordinator per auto-submit rule (`@injourney`, new round; keep prior `submission_id` if any; do not pick new entry as final until dev grade vs place-40 screen is observed).
 
 ## Blockers
 - Public GitHub repository does not exist yet (`gh` not logged in; requires user/operator action before submission).
-- Final transcript bundle cannot be finalized inside this session while session 2 is still running (and requires `--session` for Antigravity custom appDataDir logs + `--muse-usage` from `muse.db`).
+- Final transcript bundle: build after this turn ends (see Next #2); default bundle discovery pulls unrelated sessions — use `--no-discover --antigravity-dir` as above.
 - `grade-local` is unavailable (sealed server-side scorer/judge).
 
 ## Conversations
