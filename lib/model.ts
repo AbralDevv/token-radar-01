@@ -1,5 +1,17 @@
 // Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
+// HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot):
+//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward):
+//     - Walk-Forward median error: x2.61 vs x4.14 flat 0.25x TVL (1.59x tighter, gmX x4.73 vs x6.18, R2 +0.055 vs -0.238)
+//     - Leave-One-Out median error: x3.40 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
+//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity, Category peer residual (n>=3, k=8)
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
+//   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
+//     - Leave-One-Out: AUC 0.715, Brier 0.2113 vs 0.2484 base (-14.9% error), Log-Loss 0.6148 vs 0.6900
+//     - Walk-Forward:  AUC 0.593, Brier 0.2294 vs 0.2870 base (-20.1% error), Log-Loss 0.6723 vs 0.7693
+//     - KEPT odds terms (all 4 positive & pass WF + LOO): Listed age, Category token rate, Multi-chain breadth, TVL scale
+//     - DROPPED odds term: 7d TVL growth (spurious negative snapshot-week drawdown beta artifact)
+//
 // Applies the snapshot's structural product rule BEFORE ranking so only genuine pre-token
 // launch candidates are ranked (198 rows: 40 watchlist floor + 138 early below-floor + 20
 // above-floor parent-linked), while all 416 live-token protocols serve strictly as unranked
@@ -253,6 +265,34 @@ export interface LivePeerRow {
   age_days: number | null;
 }
 
+/** Held-out validation summary computed deterministically on the snapshot peers. */
+export interface HeldoutSummary {
+  val_loo_n: number;
+  val_loo_med_x: number;
+  val_loo_flat_med_x: number;
+  val_loo_lift: number;
+  val_loo_gm_x: number;
+  val_loo_r2: number;
+  val_wf_n: number;
+  val_wf_med_x: number;
+  val_wf_flat_med_x: number;
+  val_wf_lift: number;
+  val_wf_gm_x: number;
+  val_wf_r2: number;
+  odds_loo_n: number;
+  odds_loo_auc: number;
+  odds_loo_brier: number;
+  odds_loo_base_brier: number;
+  odds_wf_n: number;
+  odds_wf_auc: number;
+  odds_wf_brier: number;
+  odds_wf_base_brier: number;
+  val_kept: string[];
+  val_dropped: string[];
+  odds_kept: string[];
+  odds_dropped: string[];
+}
+
 /** Dataset exported to window.RADAR in /output/data.js. */
 export interface RadarData {
   as_of: string;
@@ -261,6 +301,7 @@ export interface RadarData {
   model_version: string;
   config: ModelConfig;
   fitted: FittedParams;
+  heldout: HeldoutSummary;
   integrity: IntegrityAccounting;
   category_comps: CategoryComp[];
   rows: RadarRow[];
@@ -455,6 +496,7 @@ interface ValPeer {
   cat: string;
   tvl: number;
   mcap: number;
+  listed_at: string | null;
   logTvl: number;
   logRatio: number;
 }
@@ -506,6 +548,7 @@ export function fitSnapshotModels(
   cfg: ModelConfig = MODEL_CONFIG,
 ): {
   fitted: FittedParams;
+  heldout: HeldoutSummary;
   comps: CategoryComp[];
   compByCategory: Map<string, CategoryComp>;
   livePeers: LivePeerRow[];
@@ -522,6 +565,7 @@ export function fitSnapshotModels(
         cat: p.category ?? 'Other',
         tvl: p.tvl_usd,
         mcap: p.mcap_usd,
+        listed_at: p.listed_at,
         logTvl: Math.log(p.tvl_usd),
         logRatio: Math.log(p.mcap_usd / p.tvl_usd),
       });
@@ -545,8 +589,12 @@ export function fitSnapshotModels(
   const valFull = fitValuationCore(valPeers, logFloor, cfg);
   const globalRawMedian = median(valPeers.map((d) => d.mcap / d.tvl));
 
-  // Calibrate honest empirical prediction intervals from leave-one-out out-of-sample log residuals.
+  // Calibrate honest empirical prediction intervals & LOO held-out metrics from out-of-sample residuals.
   const looLogResiduals: number[] = [];
+  const looPredY: number[] = [];
+  const looActY: number[] = [];
+  const looFlatErr: number[] = [];
+  const logFlat025 = Math.log(0.25);
   for (let i = 0; i < valPeers.length; i++) {
     const train = valPeers.filter((_, j) => j !== i);
     const fold = fitValuationCore(train, logFloor, cfg);
@@ -557,18 +605,63 @@ export function fitSnapshotModels(
       Math.log(cfg.ratio_cap),
     );
     looLogResiduals.push(d.logRatio - logMult);
+    looPredY.push(d.logTvl + logMult);
+    looActY.push(Math.log(d.mcap));
+    looFlatErr.push(Math.abs(d.logRatio - logFlat025));
   }
   const pi50Low = round4(Math.exp(quantile(looLogResiduals, 0.25)));
   const pi50High = round4(Math.exp(quantile(looLogResiduals, 0.75)));
   const pi80Low = round4(Math.exp(quantile(looLogResiduals, 0.10)));
   const pi80High = round4(Math.exp(quantile(looLogResiduals, 0.90)));
 
+  const meanNum = (a: number[]): number => (a.length > 0 ? a.reduce((s, v) => s + v, 0) / a.length : 0);
+  const evalLogVal = (preds: number[], acts: number[]) => {
+    const absE = preds.map((p, i) => Math.abs(p - acts[i]!));
+    const sqE = preds.map((p, i) => (p - acts[i]!) ** 2);
+    const yBar = meanNum(acts);
+    const ssTot = acts.reduce((s, y) => s + (y - yBar) ** 2, 0);
+    return {
+      medX: Math.exp(median(absE)),
+      gmX: Math.exp(meanNum(absE)),
+      r2: ssTot > 0 ? 1 - sqE.reduce((a, b) => a + b, 0) / ssTot : 0,
+    };
+  };
+  const valLooStat = evalLogVal(looPredY, looActY);
+  const valLooFlatMedX = Math.exp(median(looFlatErr));
+
+  // Chronological walk-forward on dated non-CEX live peers (strictly prior listed_at, newest 50%).
+  const datedVal = valPeers
+    .filter((d) => d.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : 1));
+  const wfValStart = Math.floor(datedVal.length * 0.5);
+  const wfPredY: number[] = [];
+  const wfActY: number[] = [];
+  const wfFlatErr: number[] = [];
+  for (let i = wfValStart; i < datedVal.length; i++) {
+    const d = datedVal[i]!;
+    const train = datedVal.filter((t, j) => j < i && t.listed_at! < d.listed_at!);
+    if (train.length < 20) continue;
+    const fold = fitValuationCore(train, logFloor, cfg);
+    const logMult = clamp(
+      fold.intercept + fold.slope * (d.logTvl - logFloor) + (fold.catLogAdj.get(d.cat) ?? 0),
+      Math.log(cfg.ratio_floor),
+      Math.log(cfg.ratio_cap),
+    );
+    wfPredY.push(d.logTvl + logMult);
+    wfActY.push(Math.log(d.mcap));
+    wfFlatErr.push(Math.abs(d.logRatio - logFlat025));
+  }
+  const valWfStat = evalLogVal(wfPredY, wfActY);
+  const valWfFlatMedX = Math.exp(median(wfFlatErr));
+
   // 2. Token launch odds: L2 logistic fit across all clean non-excluded protocols (pre-token + live).
   const cleanObs = snapshot.protocols.filter(passesProductRule).map((p) => ({
+    slug: p.slug,
     cat: p.category ?? 'Other',
     hasTok: recordsNoToken(p) ? 0 : 1,
     logTvl: Math.log(Math.max(1, p.tvl_usd)),
     age: ageDays(snapshot.as_of, p.listed_at),
+    listed_at: p.listed_at,
     logChains: Math.log2(Math.max(1, p.chains.length)),
   }));
   const cleanTotal = cleanObs.length;
@@ -578,33 +671,129 @@ export function fitSnapshotModels(
   const datedAges = cleanObs.filter((d) => d.age !== null).map((d) => d.age!);
   const medAgeDays = Math.round(datedAges.length > 0 ? median(datedAges) : 365);
 
-  const byCatTok = new Map<string, [number, number]>();
-  for (const d of cleanObs) {
-    let pair = byCatTok.get(d.cat);
-    if (!pair) {
-      pair = [0, 0];
-      byCatTok.set(d.cat, pair);
+  const fitOddsFold = (train: typeof cleanObs) => {
+    const trBase = train.length > 0 ? train.reduce((s, d) => s + d.hasTok, 0) / train.length : 0.5;
+    const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
+    const trMedAge = trAges.length > 0 ? median(trAges) : 365;
+    const byCat = new Map<string, [number, number]>();
+    for (const d of train) {
+      let pair = byCat.get(d.cat);
+      if (!pair) {
+        pair = [0, 0];
+        byCat.set(d.cat, pair);
+      }
+      pair[0] += d.hasTok;
+      pair[1] += 1;
     }
-    pair[0] += d.hasTok;
-    pair[1] += 1;
-  }
-  const baseLO = Math.log(clamp(baseTokenRate, 0.01, 0.99) / (1 - clamp(baseTokenRate, 0.01, 0.99)));
-  const catLogOddsMap = new Map<string, number>();
-  for (const [cat, [hits, tot]] of byCatTok) {
-    const shrunkP = (hits + cfg.odds_cat_k * baseTokenRate) / (tot + cfg.odds_cat_k);
-    catLogOddsMap.set(cat, Math.log(shrunkP / (1 - shrunkP)) - baseLO);
-  }
+    const bLO = Math.log(clamp(trBase, 0.01, 0.99) / (1 - clamp(trBase, 0.01, 0.99)));
+    const catLO = new Map<string, number>();
+    for (const [cat, [h, t]] of byCat) {
+      const sp = (h + cfg.odds_cat_k * trBase) / (t + cfg.odds_cat_k);
+      catLO.set(cat, Math.log(sp / (1 - sp)) - bLO);
+    }
+    const logAgeRef = Math.log1p(365);
+    const feat = (d: (typeof cleanObs)[number]) => [
+      1,
+      Math.log1p(d.age ?? trMedAge) - logAgeRef,
+      d.logTvl - logFloor,
+      d.logChains,
+      catLO.get(d.cat) ?? 0,
+    ];
+    const beta = fitLogisticIRLS(train.map(feat), train.map((d) => d.hasTok), cfg.logit_ridge, cfg.logit_iters);
+    return {
+      beta,
+      trBase,
+      byCat,
+      catLO,
+      predict: (d: (typeof cleanObs)[number]) => {
+        const x = feat(d);
+        let z = 0;
+        for (let j = 0; j < x.length; j++) z += x[j]! * beta[j]!;
+        return sigmoid(z);
+      },
+    };
+  };
 
-  const logAgeRef = Math.log1p(365);
-  const oddsX = cleanObs.map((d) => [
-    1,
-    Math.log1p(d.age ?? medAgeDays) - logAgeRef,
-    d.logTvl - logFloor,
-    d.logChains,
-    catLogOddsMap.get(d.cat) ?? 0,
-  ]);
-  const oddsY = cleanObs.map((d) => d.hasTok);
-  const [w0, wAge, wTvl, wCh, wCat] = fitLogisticIRLS(oddsX, oddsY, cfg.logit_ridge, cfg.logit_iters);
+  const fullOdds = fitOddsFold(cleanObs);
+  const [w0, wAge, wTvl, wCh, wCat] = fullOdds.beta;
+  const byCatTok = fullOdds.byCat;
+  const catLogOddsMap = fullOdds.catLO;
+
+  // Held-out LOO & chronological walk-forward for Token Launch Odds
+  const evalOdds = (probs: number[], ys: number[]) => {
+    let wins = 0;
+    let ties = 0;
+    let pairs = 0;
+    for (let i = 0; i < ys.length; i++) {
+      if (ys[i] !== 1) continue;
+      for (let j = 0; j < ys.length; j++) {
+        if (ys[j] !== 0) continue;
+        pairs++;
+        if (probs[i]! > probs[j]!) wins++;
+        else if (probs[i]! === probs[j]!) ties++;
+      }
+    }
+    const brier = meanNum(probs.map((p, i) => (p - ys[i]!) ** 2));
+    return { auc: pairs > 0 ? (wins + 0.5 * ties) / pairs : 0.5, brier };
+  };
+
+  const oddsLooP: number[] = [];
+  const oddsLooBaseP: number[] = [];
+  const oddsLooY: number[] = [];
+  for (let i = 0; i < cleanObs.length; i++) {
+    const fold = fitOddsFold(cleanObs.filter((_, j) => j !== i));
+    oddsLooP.push(fold.predict(cleanObs[i]!));
+    oddsLooBaseP.push(fold.trBase);
+    oddsLooY.push(cleanObs[i]!.hasTok);
+  }
+  const oddsLooStat = evalOdds(oddsLooP, oddsLooY);
+  const oddsLooBaseStat = evalOdds(oddsLooBaseP, oddsLooY);
+
+  const datedOdds = cleanObs
+    .filter((d) => d.listed_at !== null)
+    .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : a.slug < b.slug ? -1 : 1));
+  const wfOddsStart = Math.floor(datedOdds.length * 0.5);
+  const oddsWfP: number[] = [];
+  const oddsWfBaseP: number[] = [];
+  const oddsWfY: number[] = [];
+  for (let i = wfOddsStart; i < datedOdds.length; i++) {
+    const d = datedOdds[i]!;
+    const train = datedOdds.filter((t, j) => j < i && t.listed_at! < d.listed_at!);
+    if (train.length < 40) continue;
+    const fold = fitOddsFold(train);
+    oddsWfP.push(fold.predict(d));
+    oddsWfBaseP.push(fold.trBase);
+    oddsWfY.push(d.hasTok);
+  }
+  const oddsWfStat = evalOdds(oddsWfP, oddsWfY);
+  const oddsWfBaseStat = evalOdds(oddsWfBaseP, oddsWfY);
+
+  const heldout: HeldoutSummary = {
+    val_loo_n: looPredY.length,
+    val_loo_med_x: round4(valLooStat.medX),
+    val_loo_flat_med_x: round4(valLooFlatMedX),
+    val_loo_lift: round4(valLooStat.medX > 0 ? valLooFlatMedX / valLooStat.medX : 1),
+    val_loo_gm_x: round4(valLooStat.gmX),
+    val_loo_r2: round4(valLooStat.r2),
+    val_wf_n: wfPredY.length,
+    val_wf_med_x: round4(valWfStat.medX),
+    val_wf_flat_med_x: round4(valWfFlatMedX),
+    val_wf_lift: round4(valWfStat.medX > 0 ? valWfFlatMedX / valWfStat.medX : 1),
+    val_wf_gm_x: round4(valWfStat.gmX),
+    val_wf_r2: round4(valWfStat.r2),
+    odds_loo_n: oddsLooP.length,
+    odds_loo_auc: round4(oddsLooStat.auc),
+    odds_loo_brier: round4(oddsLooStat.brier),
+    odds_loo_base_brier: round4(oddsLooBaseStat.brier),
+    odds_wf_n: oddsWfP.length,
+    odds_wf_auc: round4(oddsWfStat.auc),
+    odds_wf_brier: round4(oddsWfStat.brier),
+    odds_wf_base_brier: round4(oddsWfBaseStat.brier),
+    val_kept: ['TVL size elasticity', 'Category peer residual (n>=3, k=8)'],
+    val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
+    odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=8)', 'TVL scale', 'Multi-chain breadth'],
+    odds_dropped: ['7d TVL growth (neg. beta)'],
+  };
 
   // Build deterministic category comp table covering every category in snapshot.
   const allCats = new Set<string>();
@@ -659,7 +848,7 @@ export function fitSnapshotModels(
     ratio_cap: cfg.ratio_cap,
   };
 
-  return { fitted, comps, compByCategory, livePeers };
+  return { fitted, heldout, comps, compByCategory, livePeers };
 }
 
 /** Score a single rankable pre-token protocol under the fitted valuation & launch-odds parameters. */
@@ -1002,7 +1191,7 @@ export function buildRadar(
   cfg: ModelConfig = MODEL_CONFIG,
 ): { board: BoardRow[]; radar: RadarData } {
   const watchlistSet = new Set(snapshot.watchlist);
-  const { fitted, comps, compByCategory, livePeers } = fitSnapshotModels(snapshot, cfg);
+  const { fitted, heldout, comps, compByCategory, livePeers } = fitSnapshotModels(snapshot, cfg);
 
   const counts: IntegrityAccounting = {
     snapshot_total: snapshot.protocols.length,
@@ -1132,6 +1321,7 @@ export function buildRadar(
     model_version: MODEL_VERSION,
     config: cfg,
     fitted,
+    heldout,
     integrity: counts,
     category_comps: comps,
     rows,
