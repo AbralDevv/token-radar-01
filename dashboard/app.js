@@ -333,9 +333,9 @@
         el('h1', { text: 'Pre-Token Launch Valuation & Farm Terminal' }),
         el('p', { class: 'hero-sub', text: `Empirical peer-comp valuation across all ${DATA.total_protocols} DefiLlama protocols. Protocols that record no token are separated from live-token peers and anchored by live category MCap/TVL multiples, 7d TVL momentum, longevity, and multi-chain reach. Implied values are transparent model outputs, never launch guarantees.` }),
         el('div', { class: 'howto' },
-          el('span', { class: 'howto-step' }, el('b', { text: '1' }), 'Pick a cohort tab or filter by chain, category & TVL'),
-          el('span', { class: 'howto-step' }, el('b', { text: '2' }), 'Click any row for its valuation waterfall & 6-step farm plan'),
-          el('span', { class: 'howto-step' }, el('b', { text: '3' }), 'Stress-test weights live in Model Sandbox')
+          el('span', { class: 'howto-step' }, el('b', { text: '1' }), 'Filter by cohort, chain, category & TVL'),
+          el('span', { class: 'howto-step' }, el('b', { text: '2' }), 'Click any row for waterfall & farm plan'),
+          el('span', { class: 'howto-step' }, el('b', { text: '3' }), 'Tune weights in Sandbox')
         )
       ),
       el('div', { class: 'kpi-grid' },
