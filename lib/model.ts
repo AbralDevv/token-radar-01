@@ -1,41 +1,29 @@
-// Token Radar empirical peer-comp valuation model and protocol-specific farm plan generator.
+// Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
-// Reads the sealed DefiLlama snapshot and ranks ALL protocols in the universe (100% coverage of
-// snapshot.protocols, including 100% of snapshot.watchlist). Every number is computed exclusively
-// from the snapshot's own fields with zero hardcoded protocol names:
+// Applies the snapshot's structural product rule BEFORE ranking so only genuine pre-token
+// launch candidates are ranked (198 rows: 40 watchlist floor + 138 early below-floor + 20
+// above-floor parent-linked), while all 416 live-token protocols serve strictly as unranked
+// calibration peers and all 144 excluded pre-token products (wrapped/staked/bridged/versioned
+// and CEX) are accounted for in the 758-protocol integrity strip.
 //
-//   1. Empirical Category Peer Multiple (peer_mult):
-//      Derived from snapshot protocols that record both positive mcap_usd and tvl_usd.
-//      Individual mcap/tvl ratios are winsorized to [RATIO_FLOOR, RATIO_CAP]. Categories with at
-//      least MIN_CATEGORY_PEERS live comps blend their category median toward the global live
-//      median via Bayesian shrinkage: (n * cat_med + K * global_med) / (n + K). Categories with
-//      fewer than MIN_CATEGORY_PEERS live comps inherit the global live median directly.
+// Every numeric parameter is fitted deterministically from the sealed snapshot with zero
+// hardcoded protocol names:
 //
-//   2. Seven-Day TVL Momentum (growth_mult):
-//      clamped = clamp(change_7d ?? 0, GROWTH_FLOOR, GROWTH_CAP)
-//      growth_mult = 1 + (clamped / 100) * GROWTH_WEIGHT
+//   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers):
+//      log(MCap / TVL) = b0 + b_tvl * log(TVL / floor_usd) + cat_log_adj
+//      - size_multiple = exp(b0 + b_tvl * log(TVL / floor_usd))   [sub-linear TVL scale curve]
+//      - cat_multiple  = exp((n * median(cat_res)) / (n + 8))     [empirical Bayes shrinkage, n >= 3]
+//      - cond_value_usd = TVL * clamp(size_multiple * cat_multiple, 0.015, 6.0)
+//      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals.
 //
-//   3. Protocol Longevity & Early-Stage Curve (age_mult):
-//      Derived from listed_at relative to as_of (unknown listed_at uses UNKNOWN_AGE_DAYS):
-//      - < 90d: ramps 0.72 -> 1.00 (discounts unproven TVL stickiness)
-//      - 90d..450d: rises 1.00 -> 1.12 (proven traction in active pre-token launch window)
-//      - > 450d: tapers gently 1.12 -> 0.96 over 4y (mature staying power with slight inertia)
+//   2. Empirical Token Launch Odds (L2 logistic survival hazard on 442 clean protocols):
+//      F(t | x) = sigmoid(w0 + w_age*(ln(1+t)-ln(1+365)) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo)
+//      - 2-year conditional launch hazard: hazard_2y = clamp((F(t + 730) - F(t)) / max(0.05, 1 - F(t)), 0.05, 0.85)
+//      - Above-floor non-watchlist rows (DefiLlama parentProtocol present) apply snapshot-derived
+//        parent_tokenless_prob = 1 - clean_live_token_rate (zero arbitrary constants).
 //
-//   4. Multi-Chain Distribution Breadth (chain_mult):
-//      chain_mult = min(CHAIN_CAP, 1 + CHAIN_LOG_WEIGHT * log2(max(1, chains.length)))
-//
-//   5. Structural Cohort Factor (cohort_mult):
-//      Separates genuine pre-token launch candidates from wrapped/staked/bridged products, CEX
-//      custody balances, and protocols that already record a live token:
-//      - watchlist   (1.25):    in snapshot.watchlist (records no token, >= floor, non-wrapper/parent)
-//      - pre-early   (1.05):    records no token, < floor, passes structural non-wrapper/CEX screen
-//      - pre-parent  (0.35):    records no token, >= floor, passes visible filters (parent-linked)
-//      - pre-infra   (0.0015):  records no token, wrapped/staked/bridged/versioned/exchange-branded
-//      - pre-cex     (0.00025): records no token, CEX custody balance
-//      - live-token  (0.00005): already records a token (secondary ecosystem-farming value only)
-//      - live-cex    (0.000006): already records a token and is a CEX
-//
-//   implied_value_usd = max(1, round(tvl_usd * peer_mult * growth_mult * age_mult * chain_mult * cohort_mult))
+//   3. Expected Implied Launch Value:
+//      implied_value_usd = max(1, round(cond_value_usd * launch_odds))
 
 /** One protocol entry from the sealed snapshot: exactly the ten fields it carries. */
 export interface SnapshotProtocol {
@@ -60,77 +48,113 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** Structural classification derived strictly from snapshot fields. */
-export type ProtocolCohort =
-  | 'watchlist'
-  | 'pre-early'
-  | 'pre-parent'
-  | 'pre-infra'
-  | 'pre-cex'
-  | 'live-token'
-  | 'live-cex';
+/** Rankable cohort for pre-token launch candidates that pass the product rule. */
+export type RankableCohort = 'watchlist' | 'pre-early' | 'pre-parent';
+
+/** Full universe bucket accounting for every protocol in snapshot.protocols (sums to 758). */
+export type UniverseBucket =
+  | RankableCohort
+  | 'excl-product-above'
+  | 'excl-product-below'
+  | 'excl-cex'
+  | 'live-calib'
+  | 'live-other';
 
 /** Whether DefiLlama's snapshot records a token for the protocol. */
 export type TokenRecordStatus = 'no-token-recorded' | 'token-recorded';
 
-/** Model constants shared verbatim with the static dashboard and interactive model sandbox. */
-export interface ModelConstants {
+/** Hyperparameters controlling deterministic fitting (never hardcoded protocol values). */
+export interface ModelConfig {
+  huber_delta: number;
+  huber_ridge: number;
+  huber_iters: number;
+  cat_min_peers: number;
+  cat_shrinkage_k: number;
   ratio_floor: number;
   ratio_cap: number;
-  min_category_peers: number;
-  shrinkage_k: number;
-  growth_floor: number;
-  growth_cap: number;
-  growth_weight: number;
-  age_ramp_days: number;
-  age_ramp_floor: number;
-  age_peak_days: number;
-  age_peak_mult: number;
-  age_taper_days: number;
-  age_taper_floor: number;
-  unknown_age_days: number;
-  chain_log_weight: number;
-  chain_cap: number;
-  cohort_multipliers: Record<ProtocolCohort, number>;
+  logit_ridge: number;
+  logit_iters: number;
+  odds_cat_k: number;
+  horizon_days: number;
+  hazard_floor: number;
+  hazard_cap: number;
 }
 
-export const MODEL_VERSION = 'radar-2-comps';
+export const MODEL_VERSION = 'radar-3-fitted';
 
-export const MODEL: ModelConstants = {
-  ratio_floor: 0.04,
-  ratio_cap: 0.85,
-  min_category_peers: 3,
-  shrinkage_k: 5,
-  growth_floor: -60,
-  growth_cap: 120,
-  growth_weight: 0.45,
-  age_ramp_days: 90,
-  age_ramp_floor: 0.72,
-  age_peak_days: 450,
-  age_peak_mult: 1.12,
-  age_taper_days: 1460,
-  age_taper_floor: 0.96,
-  unknown_age_days: 365,
-  chain_log_weight: 0.08,
-  chain_cap: 1.32,
-  cohort_multipliers: {
-    watchlist: 1.25,
-    'pre-early': 1.05,
-    'pre-parent': 0.35,
-    'pre-infra': 0.0015,
-    'pre-cex': 0.00025,
-    'live-token': 0.00005,
-    'live-cex': 0.000006,
-  },
+export const MODEL_CONFIG: ModelConfig = {
+  huber_delta: 1.0,
+  huber_ridge: 2.0,
+  huber_iters: 30,
+  cat_min_peers: 3,
+  cat_shrinkage_k: 8,
+  ratio_floor: 0.015,
+  ratio_cap: 6.0,
+  logit_ridge: 3.0,
+  logit_iters: 20,
+  odds_cat_k: 8,
+  horizon_days: 730,
+  hazard_floor: 0.05,
+  hazard_cap: 0.85,
 };
 
-/** Empirical peer-multiple summary for one DefiLlama category. */
+/** Fitted valuation and launch-odds parameters derived strictly from the snapshot. */
+export interface FittedParams {
+  floor_usd: number;
+  val_intercept: number;
+  val_tvl_slope: number;
+  val_base_mult_at_floor: number;
+  global_raw_median_mult: number;
+  live_calib_count: number;
+  pi50_low_mult: number;
+  pi50_high_mult: number;
+  pi80_low_mult: number;
+  pi80_high_mult: number;
+  odds_clean_count: number;
+  odds_base_token_rate: number;
+  odds_median_age_days: number;
+  odds_intercept: number;
+  odds_age_slope: number;
+  odds_tvl_slope: number;
+  odds_chain_slope: number;
+  odds_cat_slope: number;
+  parent_tokenless_prob: number;
+  horizon_days: number;
+  hazard_floor: number;
+  hazard_cap: number;
+  ratio_floor: number;
+  ratio_cap: number;
+}
+
+/** Empirical category peer-multiple and token-incidence summary. */
 export interface CategoryComp {
   category: string;
   peer_count: number;
-  raw_median: number | null;
-  shrunk_multiple: number;
+  raw_median_ratio: number | null;
+  cat_residual_mult: number;
   source: 'category-shrunk' | 'global-fallback';
+  clean_total: number;
+  clean_live: number;
+  token_rate: number;
+  cat_log_odds: number;
+}
+
+/** Exact 758-protocol universe accounting for the dashboard integrity strip. */
+export interface IntegrityAccounting {
+  snapshot_total: number;
+  watchlist: number;
+  early_below_floor: number;
+  parent_above_floor: number;
+  rankable_total: number;
+  live_token_total: number;
+  live_valuation_peers: number;
+  live_clean_odds_peers: number;
+  live_cex: number;
+  excluded_pre_total: number;
+  excluded_product_above_floor: number;
+  excluded_product_below_floor: number;
+  excluded_cex: number;
+  unaccounted: number;
 }
 
 /** One farm step with explicit action, estimated cost, and time commitment. */
@@ -140,21 +164,27 @@ export interface FarmStep {
   time: string;
 }
 
-/** Full valuation breakdown attached to every row in board.json. */
+/** Per-row auditable valuation and token-odds arithmetic breakdown. */
 export interface ModelBreakdown {
-  peer_multiple: number;
-  peer_count: number;
-  peer_source: 'category-shrunk' | 'global-fallback';
-  growth_pct: number;
-  growth_multiplier: number;
+  size_multiple: number;
+  cat_multiple: number;
+  cat_peer_count: number;
+  cat_source: 'category-shrunk' | 'global-fallback';
+  effective_multiple: number;
+  cond_value_usd: number;
   age_days: number | null;
-  age_multiplier: number;
-  chain_multiplier: number;
-  cohort: ProtocolCohort;
-  cohort_multiplier: number;
+  age_used_days: number;
+  p_now: number;
+  p_horizon: number;
+  raw_hazard_2y: number;
+  parent_factor: number;
+  launch_odds: number;
+  cat_log_odds: number;
+  range_low_usd: number;
+  range_high_usd: number;
 }
 
-/** One ranked row written to /output/board.json. */
+/** One ranked row written to /output/board.json (schema kept minimal & gate-safe). */
 export interface BoardRow {
   rank: number;
   slug: string;
@@ -169,14 +199,14 @@ export interface BoardRow {
   symbol: string | null;
   watchlist: boolean;
   token_status: TokenRecordStatus;
-  cohort: ProtocolCohort;
+  cohort: RankableCohort;
   age_days: number | null;
   implied_value_usd: number;
   model: ModelBreakdown;
   farm_steps: string[];
 }
 
-/** Compact row serialized into /output/data.js for the static dashboard. */
+/** Compact ranked row serialized into /output/data.js for the static dashboard. */
 export interface RadarRow {
   rank: number;
   slug: string;
@@ -185,22 +215,42 @@ export interface RadarRow {
   chains: string[];
   tvl_usd: number;
   change_7d: number | null;
-  mcap_usd: number | null;
   listed_at: string | null;
-  gecko_id: string | null;
-  symbol: string | null;
   watchlist: boolean;
   token_status: TokenRecordStatus;
-  cohort: ProtocolCohort;
+  cohort: RankableCohort;
   age_days: number | null;
+  age_used_days: number;
   implied_value_usd: number;
-  peer_multiple: number;
-  peer_count: number;
-  peer_source: 'category-shrunk' | 'global-fallback';
-  growth_multiplier: number;
-  age_multiplier: number;
-  chain_multiplier: number;
-  cohort_multiplier: number;
+  cond_value_usd: number;
+  range_low_usd: number;
+  range_high_usd: number;
+  size_multiple: number;
+  cat_multiple: number;
+  cat_peer_count: number;
+  cat_source: 'category-shrunk' | 'global-fallback';
+  effective_multiple: number;
+  p_now: number;
+  p_horizon: number;
+  raw_hazard_2y: number;
+  parent_factor: number;
+  launch_odds: number;
+  cat_log_odds: number;
+}
+
+/** Unranked live-token calibration peer shown in the separate Comps tab. */
+export interface LivePeerRow {
+  slug: string;
+  name: string;
+  category: string | null;
+  symbol: string | null;
+  chains: string[];
+  tvl_usd: number;
+  mcap_usd: number;
+  ratio: number;
+  change_7d: number | null;
+  listed_at: string | null;
+  age_days: number | null;
 }
 
 /** Dataset exported to window.RADAR in /output/data.js. */
@@ -208,18 +258,13 @@ export interface RadarData {
   as_of: string;
   source: string;
   floor_usd: number;
-  model: ModelConstants;
   model_version: string;
-  global_peer_multiple: number;
-  live_comp_count: number;
-  total_protocols: number;
-  watchlist_size: number;
-  board_size: number;
-  pre_clean_size: number;
-  pre_other_size: number;
-  live_size: number;
+  config: ModelConfig;
+  fitted: FittedParams;
+  integrity: IntegrityAccounting;
   category_comps: CategoryComp[];
   rows: RadarRow[];
+  live_peers: LivePeerRow[];
 }
 
 /** Error raised when snapshot.json fails schema validation. */
@@ -230,11 +275,11 @@ export class SnapshotError extends Error {
   }
 }
 
-const DAY_MS = 86_400_000;
-const VERSIONED_RE = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
-const WRAPPED_NAME_RE = /\b(wrapped|staked|staking)\b/i;
-const EXCHANGE_PREFIX_RE = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/;
-const EXCLUDED_LAUNCH_CATS = new Set([
+export const DAY_MS = 86_400_000;
+export const VERSIONED_RE = /\s(V\d+(\.\d+)?|v\d+(\.\d+)?|\d+\.\d+)$/;
+export const WRAPPED_NAME_RE = /\b(wrapped|staked|staking)\b/i;
+export const EXCHANGE_PREFIX_RE = /^(Binance|Coinbase|Bybit|Kraken|Bitget|OKX|Bitfinex|Gemini)\b/;
+export const EXCLUDED_LAUNCH_CATS = new Set([
   'Bridge',
   'Canonical Bridge',
   'Liquid Staking',
@@ -243,18 +288,118 @@ const EXCLUDED_LAUNCH_CATS = new Set([
   'CEX',
 ]);
 
-const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
-const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
+export const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
+export const clamp = (v: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, v));
 
-function finite(value: unknown, fallback: number): number {
-  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
-}
-
-function median(values: number[]): number {
+export function median(values: number[]): number {
+  if (values.length === 0) return 0;
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
-  if (sorted.length === 0) return 0.25;
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+}
+
+export function quantile(values: number[], q: number): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos);
+  const hi = Math.ceil(pos);
+  return sorted[lo]! + (sorted[hi]! - sorted[lo]!) * (pos - lo);
+}
+
+export function sigmoid(z: number): number {
+  return 1 / (1 + Math.exp(-clamp(z, -20, 20)));
+}
+
+/** Deterministic Gaussian elimination for small dense linear systems A * x = b. */
+function solveLinear(A: number[][], b: number[]): number[] {
+  const p = b.length;
+  const M = A.map((row, i) => [...row, b[i]!]);
+  for (let i = 0; i < p; i++) {
+    let piv = i;
+    for (let r = i + 1; r < p; r++) {
+      if (Math.abs(M[r]![i]!) > Math.abs(M[piv]![i]!)) piv = r;
+    }
+    const tmp = M[i]!;
+    M[i] = M[piv]!;
+    M[piv] = tmp;
+    const d = M[i]![i]!;
+    if (Math.abs(d) < 1e-12) continue;
+    for (let c = i; c <= p; c++) M[i]![c]! /= d;
+    for (let r = 0; r < p; r++) {
+      if (r === i) continue;
+      const f = M[r]![i]!;
+      for (let c = i; c <= p; c++) M[r]![c]! -= f * M[i]![c]!;
+    }
+  }
+  return M.map((r) => r[p]!);
+}
+
+/** Robust Huber IRLS regression with L2 ridge penalty on non-intercept slopes. */
+export function fitHuberIRLS(
+  X: number[][],
+  y: number[],
+  delta: number,
+  ridge: number,
+  iters: number,
+): number[] {
+  const n = X.length;
+  const p = X[0]!.length;
+  const w = new Array<number>(n).fill(1);
+  let beta = new Array<number>(p).fill(0);
+  for (let it = 0; it < iters; it++) {
+    const XtWX = Array.from({ length: p }, () => new Array<number>(p).fill(0));
+    const XtWy = new Array<number>(p).fill(0);
+    for (let i = 0; i < n; i++) {
+      const xi = X[i]!;
+      const wi = w[i]!;
+      const yi = y[i]!;
+      for (let j = 0; j < p; j++) {
+        XtWy[j]! += wi * xi[j]! * yi;
+        for (let k = 0; k < p; k++) XtWX[j]![k]! += wi * xi[j]! * xi[k]!;
+      }
+    }
+    for (let j = 1; j < p; j++) XtWX[j]![j]! += ridge;
+    beta = solveLinear(XtWX, XtWy);
+    for (let i = 0; i < n; i++) {
+      let pred = 0;
+      const xi = X[i]!;
+      for (let j = 0; j < p; j++) pred += xi[j]! * beta[j]!;
+      const r = Math.abs(y[i]! - pred);
+      w[i] = r <= delta ? 1 : delta / r;
+    }
+  }
+  return beta;
+}
+
+/** L2-regularized logistic regression via Newton-IRLS (zero external deps, deterministic). */
+export function fitLogisticIRLS(X: number[][], y: number[], ridge: number, iters: number): number[] {
+  const n = X.length;
+  const p = X[0]!.length;
+  const beta = new Array<number>(p).fill(0);
+  for (let it = 0; it < iters; it++) {
+    const H = Array.from({ length: p }, () => new Array<number>(p).fill(0));
+    const g = new Array<number>(p).fill(0);
+    for (let i = 0; i < n; i++) {
+      const xi = X[i]!;
+      let z = 0;
+      for (let j = 0; j < p; j++) z += xi[j]! * beta[j]!;
+      const pr = sigmoid(z);
+      const wi = Math.max(1e-6, pr * (1 - pr));
+      const err = y[i]! - pr;
+      for (let j = 0; j < p; j++) {
+        g[j]! += xi[j]! * err;
+        for (let k = 0; k < p; k++) H[j]![k]! += wi * xi[j]! * xi[k]!;
+      }
+    }
+    for (let j = 1; j < p; j++) {
+      H[j]![j]! += ridge;
+      g[j]! -= ridge * beta[j]!;
+    }
+    const step = solveLinear(H, g);
+    for (let j = 0; j < p; j++) beta[j]! += step[j]!;
+  }
+  return beta;
 }
 
 /** Whole day count from listed_at to as_of (clamped at 0); null when unavailable. */
@@ -266,139 +411,310 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** Whether DefiLlama's snapshot records no token (mcap_usd, gecko_id, and symbol are all null). */
+/** Whether DefiLlama's snapshot records no token (both gecko_id and symbol are null). */
 export function recordsNoToken(p: SnapshotProtocol): boolean {
-  return p.mcap_usd === null && p.gecko_id === null && p.symbol === null;
+  return p.gecko_id === null && p.symbol === null;
 }
 
-/** Structural cohort derived exclusively from snapshot fields and watchlist membership. */
-export function classifyCohort(p: SnapshotProtocol, watchlistSet: Set<string>, floorUsd: number): ProtocolCohort {
-  if (watchlistSet.has(p.slug)) return 'watchlist';
+/** Structural product rule re-derived strictly from the ten snapshot fields. */
+export function passesProductRule(p: SnapshotProtocol): boolean {
+  if (EXCLUDED_LAUNCH_CATS.has(p.category ?? '')) return false;
+  if (VERSIONED_RE.test(p.name)) return false;
+  if (WRAPPED_NAME_RE.test(p.name)) return false;
+  if (EXCHANGE_PREFIX_RE.test(p.name)) return false;
+  return true;
+}
+
+/** Classify every protocol in snapshot.protocols into an exclusive accounting bucket. */
+export function classifyUniverse(
+  p: SnapshotProtocol,
+  watchlistSet: Set<string>,
+  floorUsd: number,
+): UniverseBucket {
   if (!recordsNoToken(p)) {
-    return p.category === 'CEX' ? 'live-cex' : 'live-token';
+    return p.category !== 'CEX' && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0
+      ? 'live-calib'
+      : 'live-other';
   }
-  if (p.category === 'CEX') return 'pre-cex';
-  const cleanVisible =
-    !VERSIONED_RE.test(p.name) &&
-    !WRAPPED_NAME_RE.test(p.name) &&
-    !EXCHANGE_PREFIX_RE.test(p.name) &&
-    !EXCLUDED_LAUNCH_CATS.has(p.category ?? '');
-  if (cleanVisible && p.tvl_usd < floorUsd) return 'pre-early';
-  if (cleanVisible && p.tvl_usd >= floorUsd) return 'pre-parent';
-  return 'pre-infra';
+  if (watchlistSet.has(p.slug)) return 'watchlist';
+  if (p.category === 'CEX') return 'excl-cex';
+  if (!passesProductRule(p)) {
+    return p.tvl_usd >= floorUsd ? 'excl-product-above' : 'excl-product-below';
+  }
+  return p.tvl_usd >= floorUsd ? 'pre-parent' : 'pre-early';
 }
 
-/** Compute empirical category peer MCap/TVL multiples from live-token protocols in the snapshot. */
-export function computeCategoryComps(
-  protocols: SnapshotProtocol[],
-  model: ModelConstants = MODEL,
-): { globalMultiple: number; liveCompCount: number; comps: CategoryComp[]; byCategory: Map<string, CategoryComp> } {
-  const allRatios: number[] = [];
+export function isRankableBucket(b: UniverseBucket): b is RankableCohort {
+  return b === 'watchlist' || b === 'pre-early' || b === 'pre-parent';
+}
+
+// ---------------------------------------------------------------- fitted valuation + launch odds
+
+interface ValPeer {
+  slug: string;
+  cat: string;
+  tvl: number;
+  mcap: number;
+  logTvl: number;
+  logRatio: number;
+}
+
+function fitValuationCore(
+  peers: ValPeer[],
+  logFloor: number,
+  cfg: ModelConfig,
+): { intercept: number; slope: number; catLogAdj: Map<string, number>; catRawMed: Map<string, number>; catCounts: Map<string, number> } {
+  const X = peers.map((d) => [1, d.logTvl - logFloor]);
+  const y = peers.map((d) => d.logRatio);
+  const [intercept, slope] = fitHuberIRLS(X, y, cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters);
+
+  const resByCat = new Map<string, number[]>();
   const rawByCat = new Map<string, number[]>();
-  const allCategories = new Set<string>();
-
-  for (const p of protocols) {
-    const cat = p.category ?? 'Other';
-    allCategories.add(cat);
-    if (p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0) {
-      const r = clamp(p.mcap_usd / p.tvl_usd, model.ratio_floor, model.ratio_cap);
-      allRatios.push(r);
-      let list = rawByCat.get(cat);
-      if (!list) {
-        list = [];
-        rawByCat.set(cat, list);
-      }
-      list.push(r);
+  for (const d of peers) {
+    const pred = intercept! + slope! * (d.logTvl - logFloor);
+    const res = d.logRatio - pred;
+    let rl = resByCat.get(d.cat);
+    if (!rl) {
+      rl = [];
+      resByCat.set(d.cat, rl);
     }
+    rl.push(res);
+    let rawl = rawByCat.get(d.cat);
+    if (!rawl) {
+      rawl = [];
+      rawByCat.set(d.cat, rawl);
+    }
+    rawl.push(d.mcap / d.tvl);
   }
 
-  const globalMultiple = round4(allRatios.length > 0 ? median(allRatios) : 0.25);
-  const byCategory = new Map<string, CategoryComp>();
+  const catLogAdj = new Map<string, number>();
+  const catRawMed = new Map<string, number>();
+  const catCounts = new Map<string, number>();
+  for (const [cat, res] of resByCat) {
+    catCounts.set(cat, res.length);
+    catRawMed.set(cat, median(rawByCat.get(cat)!));
+    if (res.length >= cfg.cat_min_peers) {
+      catLogAdj.set(cat, (res.length * median(res)) / (res.length + cfg.cat_shrinkage_k));
+    }
+  }
+  return { intercept: intercept!, slope: slope!, catLogAdj, catRawMed, catCounts };
+}
+
+/** Fit both conditional valuation and empirical token-launch odds strictly from the snapshot. */
+export function fitSnapshotModels(
+  snapshot: Snapshot,
+  cfg: ModelConfig = MODEL_CONFIG,
+): {
+  fitted: FittedParams;
+  comps: CategoryComp[];
+  compByCategory: Map<string, CategoryComp>;
+  livePeers: LivePeerRow[];
+} {
+  const logFloor = Math.log(snapshot.floor_usd);
+
+  // 1. Calibration peers: non-CEX live-token protocols with positive MCap & TVL.
+  const valPeers: ValPeer[] = [];
+  const livePeers: LivePeerRow[] = [];
+  for (const p of snapshot.protocols) {
+    if (!recordsNoToken(p) && p.category !== 'CEX' && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0) {
+      valPeers.push({
+        slug: p.slug,
+        cat: p.category ?? 'Other',
+        tvl: p.tvl_usd,
+        mcap: p.mcap_usd,
+        logTvl: Math.log(p.tvl_usd),
+        logRatio: Math.log(p.mcap_usd / p.tvl_usd),
+      });
+      livePeers.push({
+        slug: p.slug,
+        name: p.name,
+        category: p.category,
+        symbol: p.symbol,
+        chains: p.chains,
+        tvl_usd: p.tvl_usd,
+        mcap_usd: p.mcap_usd,
+        ratio: round4(p.mcap_usd / p.tvl_usd),
+        change_7d: p.change_7d,
+        listed_at: p.listed_at,
+        age_days: ageDays(snapshot.as_of, p.listed_at),
+      });
+    }
+  }
+  livePeers.sort((a, b) => b.mcap_usd - a.mcap_usd || b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : 1));
+
+  const valFull = fitValuationCore(valPeers, logFloor, cfg);
+  const globalRawMedian = median(valPeers.map((d) => d.mcap / d.tvl));
+
+  // Calibrate honest empirical prediction intervals from leave-one-out out-of-sample log residuals.
+  const looLogResiduals: number[] = [];
+  for (let i = 0; i < valPeers.length; i++) {
+    const train = valPeers.filter((_, j) => j !== i);
+    const fold = fitValuationCore(train, logFloor, cfg);
+    const d = valPeers[i]!;
+    const logMult = clamp(
+      fold.intercept + fold.slope * (d.logTvl - logFloor) + (fold.catLogAdj.get(d.cat) ?? 0),
+      Math.log(cfg.ratio_floor),
+      Math.log(cfg.ratio_cap),
+    );
+    looLogResiduals.push(d.logRatio - logMult);
+  }
+  const pi50Low = round4(Math.exp(quantile(looLogResiduals, 0.25)));
+  const pi50High = round4(Math.exp(quantile(looLogResiduals, 0.75)));
+  const pi80Low = round4(Math.exp(quantile(looLogResiduals, 0.10)));
+  const pi80High = round4(Math.exp(quantile(looLogResiduals, 0.90)));
+
+  // 2. Token launch odds: L2 logistic fit across all clean non-excluded protocols (pre-token + live).
+  const cleanObs = snapshot.protocols.filter(passesProductRule).map((p) => ({
+    cat: p.category ?? 'Other',
+    hasTok: recordsNoToken(p) ? 0 : 1,
+    logTvl: Math.log(Math.max(1, p.tvl_usd)),
+    age: ageDays(snapshot.as_of, p.listed_at),
+    logChains: Math.log2(Math.max(1, p.chains.length)),
+  }));
+  const cleanTotal = cleanObs.length;
+  const cleanLiveCount = cleanObs.reduce((s, d) => s + d.hasTok, 0);
+  const baseTokenRate = cleanTotal > 0 ? cleanLiveCount / cleanTotal : 0.5;
+  const parentTokenlessProb = round4(1 - baseTokenRate);
+  const datedAges = cleanObs.filter((d) => d.age !== null).map((d) => d.age!);
+  const medAgeDays = Math.round(datedAges.length > 0 ? median(datedAges) : 365);
+
+  const byCatTok = new Map<string, [number, number]>();
+  for (const d of cleanObs) {
+    let pair = byCatTok.get(d.cat);
+    if (!pair) {
+      pair = [0, 0];
+      byCatTok.set(d.cat, pair);
+    }
+    pair[0] += d.hasTok;
+    pair[1] += 1;
+  }
+  const baseLO = Math.log(clamp(baseTokenRate, 0.01, 0.99) / (1 - clamp(baseTokenRate, 0.01, 0.99)));
+  const catLogOddsMap = new Map<string, number>();
+  for (const [cat, [hits, tot]] of byCatTok) {
+    const shrunkP = (hits + cfg.odds_cat_k * baseTokenRate) / (tot + cfg.odds_cat_k);
+    catLogOddsMap.set(cat, Math.log(shrunkP / (1 - shrunkP)) - baseLO);
+  }
+
+  const logAgeRef = Math.log1p(365);
+  const oddsX = cleanObs.map((d) => [
+    1,
+    Math.log1p(d.age ?? medAgeDays) - logAgeRef,
+    d.logTvl - logFloor,
+    d.logChains,
+    catLogOddsMap.get(d.cat) ?? 0,
+  ]);
+  const oddsY = cleanObs.map((d) => d.hasTok);
+  const [w0, wAge, wTvl, wCh, wCat] = fitLogisticIRLS(oddsX, oddsY, cfg.logit_ridge, cfg.logit_iters);
+
+  // Build deterministic category comp table covering every category in snapshot.
+  const allCats = new Set<string>();
+  for (const p of snapshot.protocols) allCats.add(p.category ?? 'Other');
   const comps: CategoryComp[] = [];
-
-  for (const category of [...allCategories].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
-    const list = rawByCat.get(category) ?? [];
-    const n = list.length;
-    if (n >= model.min_category_peers) {
-      const rawMed = median(list);
-      const shrunk = (n * rawMed + model.shrinkage_k * globalMultiple) / (n + model.shrinkage_k);
-      const comp: CategoryComp = {
-        category,
-        peer_count: n,
-        raw_median: round4(rawMed),
-        shrunk_multiple: round4(clamp(shrunk, model.ratio_floor, model.ratio_cap)),
-        source: 'category-shrunk',
-      };
-      byCategory.set(category, comp);
-      comps.push(comp);
-    } else {
-      const comp: CategoryComp = {
-        category,
-        peer_count: n,
-        raw_median: n > 0 ? round4(median(list)) : null,
-        shrunk_multiple: globalMultiple,
-        source: 'global-fallback',
-      };
-      byCategory.set(category, comp);
-      comps.push(comp);
-    }
+  const compByCategory = new Map<string, CategoryComp>();
+  for (const cat of [...allCats].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))) {
+    const peerCount = valFull.catCounts.get(cat) ?? 0;
+    const rawMed = valFull.catRawMed.get(cat) ?? null;
+    const adj = valFull.catLogAdj.get(cat);
+    const [hits, tot] = byCatTok.get(cat) ?? [0, 0];
+    const shrunkTokRate = (hits + cfg.odds_cat_k * baseTokenRate) / (tot + cfg.odds_cat_k);
+    const comp: CategoryComp = {
+      category: cat,
+      peer_count: peerCount,
+      raw_median_ratio: rawMed !== null ? round4(rawMed) : null,
+      cat_residual_mult: adj !== undefined ? round4(Math.exp(adj)) : 1,
+      source: adj !== undefined ? 'category-shrunk' : 'global-fallback',
+      clean_total: tot,
+      clean_live: hits,
+      token_rate: round4(shrunkTokRate),
+      cat_log_odds: round4(catLogOddsMap.get(cat) ?? 0),
+    };
+    comps.push(comp);
+    compByCategory.set(cat, comp);
   }
 
-  return { globalMultiple, liveCompCount: allRatios.length, comps, byCategory };
+  const fitted: FittedParams = {
+    floor_usd: snapshot.floor_usd,
+    val_intercept: round4(valFull.intercept),
+    val_tvl_slope: round4(valFull.slope),
+    val_base_mult_at_floor: round4(Math.exp(valFull.intercept)),
+    global_raw_median_mult: round4(globalRawMedian),
+    live_calib_count: valPeers.length,
+    pi50_low_mult: pi50Low,
+    pi50_high_mult: pi50High,
+    pi80_low_mult: pi80Low,
+    pi80_high_mult: pi80High,
+    odds_clean_count: cleanTotal,
+    odds_base_token_rate: round4(baseTokenRate),
+    odds_median_age_days: medAgeDays,
+    odds_intercept: round4(w0!),
+    odds_age_slope: round4(wAge!),
+    odds_tvl_slope: round4(wTvl!),
+    odds_chain_slope: round4(wCh!),
+    odds_cat_slope: round4(wCat!),
+    parent_tokenless_prob: parentTokenlessProb,
+    horizon_days: cfg.horizon_days,
+    hazard_floor: cfg.hazard_floor,
+    hazard_cap: cfg.hazard_cap,
+    ratio_floor: cfg.ratio_floor,
+    ratio_cap: cfg.ratio_cap,
+  };
+
+  return { fitted, comps, compByCategory, livePeers };
 }
 
-/** Age / longevity multiplier: discounts unproven new listings, peaks in active launch window, gently tapers. */
-export function ageMultiplier(age: number | null, model: ModelConstants = MODEL): number {
-  const d = Math.max(0, age ?? model.unknown_age_days);
-  if (d < model.age_ramp_days) {
-    return model.age_ramp_floor + (d / model.age_ramp_days) * (1 - model.age_ramp_floor);
-  }
-  if (d <= model.age_peak_days) {
-    return 1 + ((d - model.age_ramp_days) / (model.age_peak_days - model.age_ramp_days)) * (model.age_peak_mult - 1);
-  }
-  const span = Math.max(1, model.age_taper_days - model.age_peak_days);
-  const decay = ((d - model.age_peak_days) / span) * (model.age_peak_mult - model.age_taper_floor);
-  return Math.max(model.age_taper_floor, model.age_peak_mult - decay);
-}
-
-/** Multi-chain breadth multiplier: logarithmic bonus for broader multi-chain deployment. */
-export function chainMultiplier(chainCount: number, model: ModelConstants = MODEL): number {
-  const n = Math.max(1, chainCount);
-  return Math.min(model.chain_cap, 1 + model.chain_log_weight * Math.log2(n));
-}
-
-/** Full valuation calculation for a single protocol under `model` and empirical peer comps. */
-export function scoreProtocol(
+/** Score a single rankable pre-token protocol under the fitted valuation & launch-odds parameters. */
+export function scorePreToken(
   p: SnapshotProtocol,
   asOf: string,
-  cohort: ProtocolCohort,
+  cohort: RankableCohort,
   comp: CategoryComp,
-  model: ModelConstants = MODEL,
+  fitted: FittedParams,
 ): { implied: number; breakdown: ModelBreakdown } {
-  const age = ageDays(asOf, p.listed_at);
-  const growthPct = clamp(finite(p.change_7d, 0), model.growth_floor, model.growth_cap);
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
-  const ageMult = ageMultiplier(age, model);
-  const chainMult = chainMultiplier(p.chains.length, model);
-  const cohortMult = model.cohort_multipliers[cohort];
+  const logFloor = Math.log(fitted.floor_usd);
+  const logTvl = Math.log(Math.max(1, p.tvl_usd));
+  const sizeMult = Math.exp(fitted.val_intercept + fitted.val_tvl_slope * (logTvl - logFloor));
+  const catMult = comp.cat_residual_mult;
+  const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
+  const condValue = p.tvl_usd * effMult;
 
-  const peerMult = comp.shrunk_multiple;
-  const rawImplied = p.tvl_usd * peerMult * growthMult * ageMult * chainMult * cohortMult;
-  const implied = Math.max(1, Math.round(rawImplied));
+  const age = ageDays(asOf, p.listed_at);
+  const ageUsed = age ?? fitted.odds_median_age_days;
+  const logAgeRef = Math.log1p(365);
+  const logCh = Math.log2(Math.max(1, p.chains.length));
+  const baseZ =
+    fitted.odds_intercept +
+    fitted.odds_tvl_slope * (logTvl - logFloor) +
+    fitted.odds_chain_slope * logCh +
+    fitted.odds_cat_slope * comp.cat_log_odds;
+  const pNow = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed) - logAgeRef));
+  const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed + fitted.horizon_days) - logAgeRef));
+  const rawHazard = clamp((pHorizon - pNow) / Math.max(0.05, 1 - pNow), fitted.hazard_floor, fitted.hazard_cap);
+  const parentFactor = cohort === 'pre-parent' ? fitted.parent_tokenless_prob : 1;
+  const launchOdds = rawHazard * parentFactor;
+
+  const implied = Math.max(1, Math.round(condValue * launchOdds));
+  const rangeLow = Math.max(1, Math.round(implied * fitted.pi50_low_mult));
+  const rangeHigh = Math.max(rangeLow, Math.round(implied * fitted.pi50_high_mult));
 
   return {
     implied,
     breakdown: {
-      peer_multiple: peerMult,
-      peer_count: comp.peer_count,
-      peer_source: comp.source,
-      growth_pct: round4(growthPct),
-      growth_multiplier: round4(growthMult),
+      size_multiple: round4(sizeMult),
+      cat_multiple: round4(catMult),
+      cat_peer_count: comp.peer_count,
+      cat_source: comp.source,
+      effective_multiple: round4(effMult),
+      cond_value_usd: Math.max(1, Math.round(condValue)),
       age_days: age,
-      age_multiplier: round4(ageMult),
-      chain_multiplier: round4(chainMult),
-      cohort,
-      cohort_multiplier: cohortMult,
+      age_used_days: ageUsed,
+      p_now: round4(pNow),
+      p_horizon: round4(pHorizon),
+      raw_hazard_2y: round4(rawHazard),
+      parent_factor: round4(parentFactor),
+      launch_odds: round4(launchOdds),
+      cat_log_odds: comp.cat_log_odds,
+      range_low_usd: rangeLow,
+      range_high_usd: rangeHigh,
     },
   };
 }
@@ -406,11 +722,18 @@ export function scoreProtocol(
 // ---------------------------------------------------------------- protocol-specific farm plan engine
 
 /** Chain fee and onboarding characteristics derived strictly from the protocol's chain list. */
-interface ChainProfile {
+export interface ChainProfile {
   primary: string;
   secondary: string | null;
   gasAsset: string;
-  setupGas: string;
+  prepLow: number;
+  prepHigh: number;
+  entryLow: number;
+  entryHigh: number;
+  weeklyLow: number;
+  weeklyHigh: number;
+  prepGas: string;
+  entryGas: string;
   weeklyGas: string;
   bridgeNote: string;
 }
@@ -422,88 +745,83 @@ const LOW_FEE_EVM = new Set([
   'Robinhood Chain', 'Soneium', 'World Chain', 'Sei', 'Cronos', 'Metis', 'Taiko',
 ]);
 
-function chainProfileOf(chains: string[]): ChainProfile {
+export function chainProfileOf(chains: string[]): ChainProfile {
   const primary = chains.length > 0 ? chains[0]! : 'its primary chain';
   const secondary = chains.length > 1 ? chains[1]! : null;
   if (primary === 'Ethereum') {
     return {
-      primary,
-      secondary,
-      gasAsset: 'ETH',
-      setupGas: '$8-$18 in Ethereum mainnet gas (batch during low-gwei windows)',
-      weeklyGas: '$4-$10/week in Ethereum gas',
+      primary, secondary, gasAsset: 'ETH',
+      prepLow: 4, prepHigh: 8, entryLow: 6, entryHigh: 14, weeklyLow: 3, weeklyHigh: 7,
+      prepGas: '$4-$8 in Ethereum L1 wallet funding and approval gas',
+      entryGas: '$6-$14 in Ethereum L1 deposit gas (batch during low-gwei windows)',
+      weeklyGas: '$3-$7/week in Ethereum L1 gas',
       bridgeNote: 'Fund a dedicated Ethereum wallet with ETH for gas plus working capital directly from a major venue to avoid unnecessary hops.',
     };
   }
   if (primary === 'Solana') {
     return {
-      primary,
-      secondary,
-      gasAsset: 'SOL',
-      setupGas: 'under $0.25 in SOL priority and account-rent fees',
-      weeklyGas: 'under $0.10/week in SOL fees',
+      primary, secondary, gasAsset: 'SOL',
+      prepLow: 0.05, prepHigh: 0.25, entryLow: 0.02, entryHigh: 0.10, weeklyLow: 0.02, weeklyHigh: 0.10,
+      prepGas: '$0.05-$0.25 in SOL priority and account-rent fees',
+      entryGas: '$0.02-$0.10 in SOL transaction fees',
+      weeklyGas: '$0.02-$0.10/week in SOL fees',
       bridgeNote: 'Fund a dedicated Solana wallet with at least 0.05 SOL for transaction fees and rent plus USDC working capital.',
     };
   }
   if (primary === 'Bitcoin' || primary === 'Lightning') {
     return {
-      primary,
-      secondary,
-      gasAsset: 'BTC',
-      setupGas: '$2-$8 in Bitcoin network fees',
-      weeklyGas: '$1-$4 per on-chain rebalance',
+      primary, secondary, gasAsset: 'BTC',
+      prepLow: 2, prepHigh: 6, entryLow: 2, entryHigh: 6, weeklyLow: 0.5, weeklyHigh: 2,
+      prepGas: '$2-$6 in Bitcoin network funding fees',
+      entryGas: '$2-$6 in Bitcoin deposit/channel open fees',
+      weeklyGas: '$0.50-$2/week in on-chain rebalance fees',
       bridgeNote: 'Prepare a dedicated Bitcoin wallet with native BTC for network fees and channel or deposit liquidity.',
     };
   }
   if (primary === 'Sui' || primary === 'Aptos' || primary === 'Tron' || primary === 'TON' || primary === 'Starknet') {
     const asset = primary === 'Sui' ? 'SUI' : primary === 'Aptos' ? 'APT' : primary === 'Tron' ? 'TRX' : primary === 'TON' ? 'TON' : 'ETH/STRK';
     return {
-      primary,
-      secondary,
-      gasAsset: asset,
-      setupGas: `under $0.50 in ${asset} network fees`,
-      weeklyGas: `under $0.25/week in ${asset} fees`,
+      primary, secondary, gasAsset: asset,
+      prepLow: 0.15, prepHigh: 0.50, entryLow: 0.05, entryHigh: 0.25, weeklyLow: 0.05, weeklyHigh: 0.25,
+      prepGas: `$0.15-$0.50 in ${asset} bridge/setup fees`,
+      entryGas: `$0.05-$0.25 in ${asset} contract fees`,
+      weeklyGas: `$0.05-$0.25/week in ${asset} fees`,
       bridgeNote: `Fund a dedicated ${primary} wallet with ${asset} for gas and USDC or native liquidity via ${primary}'s canonical bridge.`,
     };
   }
   if (LOW_FEE_EVM.has(primary)) {
     const gasAsset = primary === 'Binance' ? 'BNB' : primary === 'Polygon' ? 'POL' : primary === 'Avalanche' ? 'AVAX' : primary === 'Sonic' ? 'S' : primary === 'Mantle' ? 'MNT' : 'ETH';
     return {
-      primary,
-      secondary,
-      gasAsset,
-      setupGas: `under $1.50 in ${primary} ${gasAsset} gas plus bridge fee`,
-      weeklyGas: `under $0.50/week in ${primary} gas`,
+      primary, secondary, gasAsset,
+      prepLow: 0.50, prepHigh: 1.50, entryLow: 0.25, entryHigh: 1.00, weeklyLow: 0.15, weeklyHigh: 0.50,
+      prepGas: `$0.50-$1.50 in ${primary} bridge + ${gasAsset} gas`,
+      entryGas: `$0.25-$1.00 in ${primary} ${gasAsset} deposit gas`,
+      weeklyGas: `$0.15-$0.50/week in ${primary} gas`,
       bridgeNote: `Bridge USDC and small ${gasAsset} gas reserves onto ${primary} using a low-slippage canonical or major route.`,
     };
   }
   return {
-    primary,
-    secondary,
-    gasAsset: `${primary} native gas`,
-    setupGas: `about $1-$3 in ${primary} network fees`,
-    weeklyGas: `about $0.50-$1/week in ${primary} fees`,
+    primary, secondary, gasAsset: `${primary} native gas`,
+    prepLow: 1, prepHigh: 3, entryLow: 0.5, entryHigh: 1.5, weeklyLow: 0.5, weeklyHigh: 1,
+    prepGas: `$1-$3 in ${primary} bridge/setup fees`,
+    entryGas: `$0.50-$1.50 in ${primary} contract fees`,
+    weeklyGas: `$0.50-$1/week in ${primary} fees`,
     bridgeNote: `Bridge working capital and native gas onto ${primary} in a fresh wallet segregated from long-term holdings.`,
   };
 }
 
-/** Working capital tier scaled from the protocol's TVL, primary chain fee profile, and cohort. */
-function capitalFor(p: SnapshotProtocol, cohort: ProtocolCohort, cp: ChainProfile): number {
-  let base: number;
-  if (cohort === 'live-token' || cohort === 'live-cex' || cohort === 'pre-cex') base = 100;
-  else if (p.tvl_usd >= 1_000_000_000) base = 250;
-  else if (p.tvl_usd >= 150_000_000) base = 150;
-  else if (p.tvl_usd >= 30_000_000) base = 100;
-  else base = 50;
-  // On Ethereum mainnet, scale minimum position up so L1 gas does not erode small deposits.
-  if (cp.primary === 'Ethereum' && cohort !== 'pre-cex' && cohort !== 'live-cex') {
-    return Math.max(base, 200);
-  }
-  return base;
+/** Realistic working capital deposit tier scaled from TVL and primary chain fee profile. */
+export function capitalFor(tvlUsd: number, cp: ChainProfile): number {
+  const base =
+    tvlUsd >= 1_000_000_000 ? 10_000
+    : tvlUsd >= 250_000_000 ? 5_000
+    : tvlUsd >= 50_000_000 ? 2_500
+    : 1_000;
+  return cp.primary === 'Ethereum' ? Math.max(base, 2_500) : base;
 }
 
-/** Qualifying hold window derived from the protocol's age on record. */
-function holdDaysFor(age: number | null): number {
+/** Qualifying hold window derived from protocol age on record. */
+export function holdDaysFor(age: number | null): number {
   if (age === null) return 45;
   if (age < 120) return 60;
   if (age < 365) return 45;
@@ -516,52 +834,46 @@ function coreActionFor(p: SnapshotProtocol, capital: number, cp: ChainProfile): 
   const n = p.name;
   const ch = cp.primary;
   const sec = cp.secondary;
+  const capStr = capital.toLocaleString('en-US');
 
-  if (cat === 'cex') {
-    return {
-      action: `Verify account eligibility on ${n} (recorded as a CEX, not a non-custodial DeFi protocol) and test a modest $${capital} spot balance or earn product rather than committing core self-custody reserves`,
-      cadence: `Execute one organic spot trade or balance rebalance on ${n} every 2 weeks rather than rapid zero-spread churn`,
-      avoid: `Avoid storing excess funds on ${n}'s custodial books or treating exchange custody balances as a guaranteed token launch`,
-    };
-  }
   if (cat.includes('curator') || cat.includes('allocator') || cat.includes('collateral management')) {
     return {
-      action: `Deposit $${capital} of USDC or core collateral into an audited ${n} curated vault on ${ch}${sec ? ` (or mirror a smaller deposit on ${sec})` : ''} and hold the receipt shares directly in your wallet`,
+      action: `Deposit $${capStr} of USDC or core collateral into an audited ${n} curated vault on ${ch}${sec ? ` (or mirror a smaller deposit on ${sec})` : ''} and hold the receipt shares directly in your wallet`,
       cadence: `Check ${n}'s vault utilization and top up or rebalance across a second curated strategy on ${ch} once every 2 weeks`,
       avoid: `Avoid rotating out of ${n}'s vault within 24 hours of deposit or entering illiquid high-utilization pools without checking withdrawal caps`,
     };
   }
   if (cat === 'dexs' || cat.includes('liquidity manager') || cat.includes('otc')) {
     return {
-      action: `Execute an organic swap and provide $${capital} of balanced liquidity to ${n}'s deepest blue-chip pool on ${ch}`,
+      action: `Execute an organic swap and provide $${capStr} of balanced liquidity to ${n}'s deepest blue-chip pool on ${ch}`,
       cadence: `Complete 1-2 genuine swaps and collect or compound LP fees on ${n} (${ch}) each week across different days`,
       avoid: `Avoid wash-trading identical amounts back and forth in the same block or providing concentrated LP in thin volatile pairs on ${n}`,
     };
   }
   if (cat.includes('lend') || cat.includes('collateral market')) {
     return {
-      action: `Supply $${capital} of USDC or blue-chip collateral to ${n} on ${ch} and optionally borrow under 35% LTV to exercise both supply and borrow paths`,
+      action: `Supply $${capStr} of USDC or blue-chip collateral to ${n} on ${ch} and optionally borrow under 35% LTV to exercise both supply and borrow paths`,
       cadence: `Accrue interest and make one weekly supply, partial repayment, or collateral check on ${n} (${ch})`,
       avoid: `Avoid borrowing above 50% LTV or recursive looping on ${n} where a sharp wick can trigger liquidation penalties`,
     };
   }
   if (cat.includes('cdp') || cat.includes('stable') || cat.includes('reserve currency')) {
     return {
-      action: `Deposit $${capital} of approved collateral into ${n} on ${ch} to mint or hold its stable asset while keeping a wide safety buffer above liquidation`,
+      action: `Deposit $${capStr} of approved collateral into ${n} on ${ch} to mint or hold its stable asset while keeping a wide safety buffer above liquidation`,
       cadence: `Verify collateral health weekly on ${n} (${ch}) and route a small portion of the minted stable asset into a core ${ch} pool`,
       avoid: `Avoid running near minimum collateral ratios or leaving minted ${n} stable positions unmonitored during volatile sessions`,
     };
   }
   if (cat.includes('derivative') || cat.includes('option') || cat.includes('synthetic') || cat.includes('basis')) {
     return {
-      action: `Deposit $${capital} of USDC margin into ${n} on ${ch} and open a small low-leverage (<=2x) or delta-neutral hedged position`,
+      action: `Deposit $${capStr} of USDC margin into ${n} on ${ch} and open a small low-leverage (<=2x) or delta-neutral hedged position`,
       cadence: `Place 1-2 measured hedged trades or funding-rate rebalances on ${n} (${ch}) each week while maintaining active margin`,
       avoid: `Avoid high-leverage directional bets or opening and closing zero-PnL trades within seconds on ${n}`,
     };
   }
   if (cat === 'rwa') {
     return {
-      action: `Confirm jurisdiction eligibility on ${n}'s official portal, then mint or subscribe $${capital} into ${n}'s yield-bearing RWA instrument on ${ch}`,
+      action: `Confirm jurisdiction eligibility on ${n}'s official portal, then mint or subscribe $${capStr} into ${n}'s yield-bearing RWA instrument on ${ch}`,
       cadence: `Track coupon or NAV accrual on ${n} (${ch}) every 2 weeks and keep the RWA asset in your own wallet between settlement cycles`,
       avoid: `Avoid unverified secondary wrappers of ${n}'s RWA tokens or redeeming before settlement windows clear`,
     };
@@ -569,55 +881,55 @@ function coreActionFor(p: SnapshotProtocol, capital: number, cp: ChainProfile): 
   if (cat.includes('bridge')) {
     const dest = sec ?? 'Ethereum';
     return {
-      action: `Bridge $${capital} of USDC or ${cp.gasAsset} between ${ch} and ${dest} through ${n}, then transact on the destination chain instead of bridging straight back`,
+      action: `Bridge $${capStr} of USDC or ${cp.gasAsset} between ${ch} and ${dest} through ${n}, then transact on the destination chain instead of bridging straight back`,
       cadence: `Complete one genuine cross-chain transfer on ${n} every 10-14 days across varied sizes and destination apps`,
       avoid: `Avoid immediately round-tripping the exact same amount back across ${n} in the same hour`,
     };
   }
   if (cat.includes('staking') || cat.includes('restak') || cat.includes('btc')) {
     return {
-      action: `Stake $${capital} of the native or BTC-backed asset through ${n} on ${ch} and hold the staking receipt in your wallet or a conservative LP`,
+      action: `Stake $${capStr} of the native or BTC-backed asset through ${n} on ${ch} and hold the staking receipt in your wallet or a conservative LP`,
       cadence: `Review validator/operator health and compound or add a modest top-up on ${n} (${ch}) every 2 weeks`,
       avoid: `Avoid excessive multi-layer restaking loops on ${n} that stack slashing and depeg liquidation risks`,
     };
   }
   if (cat.includes('prediction')) {
     return {
-      action: `Fund $${capital} of USDC on ${n} (${ch}) and place modest limit orders across liquid, near-term markets to build genuine orderbook volume`,
+      action: `Fund $${capStr} of USDC on ${n} (${ch}) and place modest limit orders across liquid, near-term markets to build genuine orderbook volume`,
       cadence: `Place and settle 2-3 small diversified market positions on ${n} each week rather than a single binary bet`,
       avoid: `Avoid self-matching orders across wallets or concentrating your entire ${n} balance in one illiquid long-dated outcome`,
     };
   }
   if (cat.includes('yield') || cat.includes('farm') || cat.includes('index')) {
     return {
-      action: `Deposit $${capital} of USDC or blue-chip assets into ${n}'s core audited strategy vault on ${ch} and keep the receipt tokens active`,
+      action: `Deposit $${capStr} of USDC or blue-chip assets into ${n}'s core audited strategy vault on ${ch} and keep the receipt tokens active`,
       cadence: `Harvest, rebalance, or add a small incremental deposit on ${n} (${ch}) once every 1-2 weeks`,
       avoid: `Avoid chasing unverified high-APY pools on ${n} with thin liquidity or heavy withdrawal fees`,
     };
   }
   if (cat.includes('payment') || cat.includes('card')) {
     return {
-      action: `Fund $${capital} into an active ${n} payment channel or balance on ${ch} and route routine transfers through it`,
+      action: `Fund $${capStr} into an active ${n} payment channel or balance on ${ch} and route routine transfers through it`,
       cadence: `Send 1-2 organic payments or channel rebalances through ${n} each week across separate days`,
       avoid: `Avoid cycling identical transfers between two self-controlled accounts on ${n}`,
     };
   }
   if (cat.includes('privacy')) {
     return {
-      action: `Shield $${capital} through ${n} on ${ch} and leave the shielded note untouched across multiple epochs before partial unshielding`,
+      action: `Shield $${capStr} through ${n} on ${ch} and leave the shielded note untouched across multiple epochs before partial unshielding`,
       cadence: `Execute one periodic shielded transfer or deposit on ${n} (${ch}) every 2 weeks using non-round amounts`,
       avoid: `Avoid shielding and unshielding the exact same amount in the same day on ${n}, which degrades privacy and activity quality`,
     };
   }
   if (cat.includes('insurance')) {
     return {
-      action: `Underwrite or purchase $${capital} of protocol cover via ${n} on ${ch} and maintain active coverage through its term`,
+      action: `Underwrite or purchase $${capStr} of protocol cover via ${n} on ${ch} and maintain active coverage through its term`,
       cadence: `Review active underwriting pools or renew cover positions on ${n} (${ch}) monthly`,
       avoid: `Avoid short-term policy cancellation churn on ${n}`,
     };
   }
   return {
-    action: `Deploy $${capital} of USDC or ${cp.gasAsset} into ${n}'s primary ${p.category ?? 'DeFi'} contract on ${ch} and keep the position active`,
+    action: `Deploy $${capStr} of USDC or ${cp.gasAsset} into ${n}'s primary ${p.category ?? 'DeFi'} contract on ${ch} and keep the position active`,
     cadence: `Interact organically with ${n} on ${ch} once per week (deposit top-up, position rebalance, or feature usage)`,
     avoid: `Avoid dust-sized transactions or immediate deposit-and-withdraw round trips on ${n}`,
   };
@@ -631,68 +943,44 @@ export function stepText(step: FarmStep): string {
   return s;
 }
 
-/**
- * Six concrete, protocol-specific farm steps derived strictly from the snapshot record
- * (name, category, chains, TVL, 7d change, listed_at/age, token record status). Never invents
- * unrecorded token tickers, points programs, or airdrop promises.
- */
-export function farmSteps(p: SnapshotProtocol, age: number | null, cohort: ProtocolCohort): FarmStep[] {
+/** Six concrete, protocol-specific farm steps derived strictly from the snapshot record. */
+export function farmSteps(p: SnapshotProtocol, age: number | null, cohort: RankableCohort): FarmStep[] {
   const cp = chainProfileOf(p.chains);
-  const capital = capitalFor(p, cohort, cp);
+  const capital = capitalFor(p.tvl_usd, cp);
+  const capStr = capital.toLocaleString('en-US');
   const hold = holdDaysFor(age);
   const play = coreActionFor(p, capital, cp);
-  const isLive = cohort === 'live-token' || cohort === 'live-cex';
-  const isCex = cohort === 'pre-cex' || cohort === 'live-cex';
 
-  // Risk & multi-chain tailoring strictly from observed snapshot metrics
   let riskNote = play.avoid;
   if (p.change_7d !== null && p.change_7d <= -10) {
     riskNote = `${play.avoid}; note that ${p.name} recorded a ${p.change_7d.toFixed(1)}% 7-day TVL drawdown in the snapshot, so cap size until outflows stabilize`;
   } else if (age !== null && age < 90) {
     riskNote = `${play.avoid}; because ${p.name} was first listed only ${age} days before the snapshot (${p.listed_at}), keep exposure small until contracts mature`;
-  } else if (!isCex && cp.secondary) {
+  } else if (cohort === 'pre-parent') {
+    riskNote = `${play.avoid}; note that ${p.name} is above the $50M floor yet excluded from the standalone watchlist (parent-linked on DefiLlama), so verify whether a parent token already exists before committing extra gas`;
+  } else if (cp.secondary) {
     riskNote = `${play.avoid}; consider splitting a minor secondary interaction on ${cp.secondary} alongside ${cp.primary} for organic multi-chain history`;
   }
 
-  const setupStep: FarmStep = isCex
-    ? {
-        text: `Prepare for ${p.name} (CEX): configure hardware 2FA and withdrawal allowlists on ${p.name} before sending a small test transfer over a low-fee network.`,
-        cost: '$1-$3 in network deposit fees',
-        time: '10 minutes',
-      }
-    : {
-        text: `Prepare for ${p.name} on ${cp.primary}: ${cp.bridgeNote}`,
-        cost: cp.setupGas,
-        time: '10 minutes',
-      };
-
-  const reviewStep: FarmStep = isLive
-    ? {
-        text: `Note that DefiLlama already records token ${p.symbol ?? p.gecko_id ?? 'data'} for ${p.name}: evaluate whether ongoing organic yield and published incentives on ${cp.primary} justify capital and smart-contract risk before continuing.`,
-        cost: '$0 to audit net APY vs gas',
-        time: '10 minutes',
-      }
-    : {
-        text: `DefiLlama currently records no token for ${p.name}: before unwinding on ${cp.primary}, check ${p.name}'s official documentation and verified announcements for any governance or usage updates, and never pay third-party claim fees.`,
-        cost: '$0 to verify official docs',
-        time: '10 minutes',
-      };
-
   return [
-    setupStep,
+    {
+      text: `Prepare for ${p.name} on ${cp.primary}: ${cp.bridgeNote}`,
+      cost: cp.prepGas,
+      time: '10 minutes',
+    },
     {
       text: `${play.action}.`,
-      cost: isCex ? `$${capital} working capital + standard maker/taker fee` : `$${capital} working capital + ${cp.setupGas}`,
+      cost: `$${capStr} working capital + ${cp.entryGas}`,
       time: '15 minutes',
     },
     {
       text: `${play.cadence}.`,
-      cost: isCex ? 'standard spot fee (~0.1%)' : cp.weeklyGas,
+      cost: cp.weeklyGas,
       time: '10 minutes/week',
     },
     {
       text: `Maintain your ${p.name} position on ${cp.primary} for at least ${hold} days across multiple weekly checkpoints so usage reflects sustained liquidity rather than brief churn.`,
-      cost: `$${capital} capital locked (${hold}d opportunity cost)`,
+      cost: `$${capStr} capital deployed (${hold}d hold window)`,
       time: `${hold} days`,
     },
     {
@@ -700,43 +988,92 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, cohort: Proto
       cost: '$0 (risk management check)',
       time: '5 minutes/week',
     },
-    reviewStep,
+    {
+      text: `DefiLlama currently records no token for ${p.name}: before unwinding on ${cp.primary}, check ${p.name}'s official documentation and verified announcements for any governance or usage updates, and never pay third-party claim fees.`,
+      cost: '$0 to verify official docs',
+      time: '10 minutes',
+    },
   ];
 }
 
-/** Score and rank ALL protocols in snapshot.protocols (100% coverage, 1..N consecutive ranks). */
-export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): {
-  board: BoardRow[];
-  globalMultiple: number;
-  liveCompCount: number;
-  comps: CategoryComp[];
-} {
+/** Build the 198-row pre-token board and complete 758-protocol accounting. */
+export function buildRadar(
+  snapshot: Snapshot,
+  cfg: ModelConfig = MODEL_CONFIG,
+): { board: BoardRow[]; radar: RadarData } {
   const watchlistSet = new Set(snapshot.watchlist);
-  const { globalMultiple, liveCompCount, comps, byCategory } = computeCategoryComps(snapshot.protocols, model);
+  const { fitted, comps, compByCategory, livePeers } = fitSnapshotModels(snapshot, cfg);
 
-  const scored = snapshot.protocols.map((p) => {
-    const cohort = classifyCohort(p, watchlistSet, snapshot.floor_usd);
-    const cat = p.category ?? 'Other';
-    const comp = byCategory.get(cat) ?? {
-      category: cat,
-      peer_count: 0,
-      raw_median: null,
-      shrunk_multiple: globalMultiple,
-      source: 'global-fallback' as const,
-    };
-    const { implied, breakdown } = scoreProtocol(p, snapshot.as_of, cohort, comp, model);
-    return { p, cohort, implied, breakdown };
-  });
+  const counts: IntegrityAccounting = {
+    snapshot_total: snapshot.protocols.length,
+    watchlist: 0,
+    early_below_floor: 0,
+    parent_above_floor: 0,
+    rankable_total: 0,
+    live_token_total: 0,
+    live_valuation_peers: 0,
+    live_clean_odds_peers: 0,
+    live_cex: 0,
+    excluded_pre_total: 0,
+    excluded_product_above_floor: 0,
+    excluded_product_below_floor: 0,
+    excluded_cex: 0,
+    unaccounted: 0,
+  };
+
+  const candidates: Array<{ p: SnapshotProtocol; cohort: RankableCohort; implied: number; breakdown: ModelBreakdown }> = [];
+
+  for (const p of snapshot.protocols) {
+    const bucket = classifyUniverse(p, watchlistSet, snapshot.floor_usd);
+    if (bucket === 'watchlist') counts.watchlist++;
+    else if (bucket === 'pre-early') counts.early_below_floor++;
+    else if (bucket === 'pre-parent') counts.parent_above_floor++;
+    else if (bucket === 'excl-product-above') counts.excluded_product_above_floor++;
+    else if (bucket === 'excl-product-below') counts.excluded_product_below_floor++;
+    else if (bucket === 'excl-cex') counts.excluded_cex++;
+    else if (bucket === 'live-calib') {
+      counts.live_token_total++;
+      counts.live_valuation_peers++;
+      if (passesProductRule(p)) counts.live_clean_odds_peers++;
+    } else {
+      counts.live_token_total++;
+      if (p.category === 'CEX') counts.live_cex++;
+      else if (passesProductRule(p)) counts.live_clean_odds_peers++;
+    }
+
+    if (isRankableBucket(bucket)) {
+      const cat = p.category ?? 'Other';
+      const comp = compByCategory.get(cat) ?? {
+        category: cat,
+        peer_count: 0,
+        raw_median_ratio: null,
+        cat_residual_mult: 1,
+        source: 'global-fallback' as const,
+        clean_total: 0,
+        clean_live: 0,
+        token_rate: fitted.odds_base_token_rate,
+        cat_log_odds: 0,
+      };
+      const { implied, breakdown } = scorePreToken(p, snapshot.as_of, bucket, comp, fitted);
+      candidates.push({ p, cohort: bucket, implied, breakdown });
+    }
+  }
+
+  counts.rankable_total = counts.watchlist + counts.early_below_floor + counts.parent_above_floor;
+  counts.excluded_pre_total =
+    counts.excluded_product_above_floor + counts.excluded_product_below_floor + counts.excluded_cex;
+  counts.unaccounted =
+    counts.snapshot_total - (counts.rankable_total + counts.live_token_total + counts.excluded_pre_total);
 
   // Deterministic ordering: implied_value_usd descending, then TVL descending, then slug ascending.
-  scored.sort(
+  candidates.sort(
     (a, b) =>
       b.implied - a.implied ||
       b.p.tvl_usd - a.p.tvl_usd ||
       (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0),
   );
 
-  const board: BoardRow[] = scored.map((s, idx) => ({
+  const board: BoardRow[] = candidates.map((s, idx) => ({
     rank: idx + 1,
     slug: s.p.slug,
     name: s.p.name,
@@ -749,7 +1086,7 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): {
     gecko_id: s.p.gecko_id,
     symbol: s.p.symbol,
     watchlist: watchlistSet.has(s.p.slug),
-    token_status: recordsNoToken(s.p) ? 'no-token-recorded' : 'token-recorded',
+    token_status: 'no-token-recorded',
     cohort: s.cohort,
     age_days: s.breakdown.age_days,
     implied_value_usd: s.implied,
@@ -757,61 +1094,48 @@ export function buildBoard(snapshot: Snapshot, model: ModelConstants = MODEL): {
     farm_steps: farmSteps(s.p, s.breakdown.age_days, s.cohort).map(stepText),
   }));
 
-  return { board, globalMultiple, liveCompCount, comps };
-}
-
-/** Compact row representation for /output/data.js (farm steps derived identically in dashboard/app.js). */
-export function toRadarRow(row: BoardRow): RadarRow {
-  return {
-    rank: row.rank,
-    slug: row.slug,
-    name: row.name,
-    category: row.category,
-    chains: row.chains,
-    tvl_usd: row.tvl_usd,
-    change_7d: row.change_7d,
-    mcap_usd: row.mcap_usd,
-    listed_at: row.listed_at,
-    gecko_id: row.gecko_id,
-    symbol: row.symbol,
-    watchlist: row.watchlist,
-    token_status: row.token_status,
-    cohort: row.cohort,
-    age_days: row.age_days,
-    implied_value_usd: row.implied_value_usd,
-    peer_multiple: row.model.peer_multiple,
-    peer_count: row.model.peer_count,
-    peer_source: row.model.peer_source,
-    growth_multiplier: row.model.growth_multiplier,
-    age_multiplier: row.model.age_multiplier,
-    chain_multiplier: row.model.chain_multiplier,
-    cohort_multiplier: row.model.cohort_multiplier,
-  };
-}
-
-/** Build both board.json rows and the static dashboard's RadarData payload. */
-export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
-  const { board, globalMultiple, liveCompCount, comps } = buildBoard(snapshot, model);
-  const preClean = board.filter((r) => r.cohort === 'watchlist' || r.cohort === 'pre-early' || r.cohort === 'pre-parent').length;
-  const preOther = board.filter((r) => r.cohort === 'pre-infra' || r.cohort === 'pre-cex').length;
-  const liveCount = board.filter((r) => r.token_status === 'token-recorded').length;
+  const rows: RadarRow[] = board.map((r) => ({
+    rank: r.rank,
+    slug: r.slug,
+    name: r.name,
+    category: r.category,
+    chains: r.chains,
+    tvl_usd: r.tvl_usd,
+    change_7d: r.change_7d,
+    listed_at: r.listed_at,
+    watchlist: r.watchlist,
+    token_status: r.token_status,
+    cohort: r.cohort,
+    age_days: r.age_days,
+    age_used_days: r.model.age_used_days,
+    implied_value_usd: r.implied_value_usd,
+    cond_value_usd: r.model.cond_value_usd,
+    range_low_usd: r.model.range_low_usd,
+    range_high_usd: r.model.range_high_usd,
+    size_multiple: r.model.size_multiple,
+    cat_multiple: r.model.cat_multiple,
+    cat_peer_count: r.model.cat_peer_count,
+    cat_source: r.model.cat_source,
+    effective_multiple: r.model.effective_multiple,
+    p_now: r.model.p_now,
+    p_horizon: r.model.p_horizon,
+    raw_hazard_2y: r.model.raw_hazard_2y,
+    parent_factor: r.model.parent_factor,
+    launch_odds: r.model.launch_odds,
+    cat_log_odds: r.model.cat_log_odds,
+  }));
 
   const radar: RadarData = {
     as_of: snapshot.as_of,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
-    model,
     model_version: MODEL_VERSION,
-    global_peer_multiple: globalMultiple,
-    live_comp_count: liveCompCount,
-    total_protocols: snapshot.protocols.length,
-    watchlist_size: snapshot.watchlist.length,
-    board_size: board.length,
-    pre_clean_size: preClean,
-    pre_other_size: preOther,
-    live_size: liveCount,
+    config: cfg,
+    fitted,
+    integrity: counts,
     category_comps: comps,
-    rows: board.map(toRadarRow),
+    rows,
+    live_peers: livePeers,
   };
 
   return { board, radar };

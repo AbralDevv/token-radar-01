@@ -1,9 +1,10 @@
 // Token Radar entrypoint (Node 22+, standard library only, zero network calls).
 //
 // Reads the sealed DefiLlama snapshot from /input/snapshot.json (or --input <file|dir>),
-// ranks every protocol in the snapshot via the empirical peer-comp model in lib/model.ts,
-// writes /output/board.json and /output/data.js, copies dashboard/ and screenshots/ into
-// /output, and generates /output/dossier.json using the vendored makefun-board.ts library.
+// applies the structural pre-token product rule, fits empirical peer-comp valuation and
+// token-launch-odds models in lib/model.ts, writes /output/board.json (198 pre-token rows)
+// and /output/data.js (board + 758-protocol integrity accounting + live calibration peers),
+// copies dashboard/ and screenshots/ into /output, and generates /output/dossier.json.
 //
 // Local run:
 //   MAKEFUN_OUTPUT_DIR=/tmp/radar-out node main.ts --input <path/to/snapshot.json>
@@ -30,7 +31,7 @@ function arg(name: string, fallback: string): string {
   return withEquals === undefined ? fallback : withEquals.slice(name.length + 3);
 }
 
-const inputArg = arg('input', '/input');
+const inputArg = arg('input', process.env.MAKEFUN_INPUT_DIR ?? '/input');
 const inputFile = inputArg.endsWith('.json') ? inputArg : join(inputArg, 'snapshot.json');
 if (!existsSync(inputFile)) {
   process.stderr.write(`token radar: no snapshot at ${inputFile}: pass --input <snapshot.json|directory> or mount /input\n`);
@@ -90,6 +91,6 @@ writeFileSync(
 );
 
 process.stdout.write(
-  `token radar (${radar.model_version}): ${radar.total_protocols} protocols ranked (${radar.watchlist_size} watchlist, ${radar.pre_clean_size} clean pre-token, ${radar.pre_other_size} infra/cex pre-token, ${radar.live_size} live-token; global peer multiple ${radar.global_peer_multiple}x across ${radar.live_comp_count} live comps)\n` +
+  `token radar (${radar.model_version}): ${radar.integrity.rankable_total} pre-token ranked (${radar.integrity.watchlist} watchlist + ${radar.integrity.early_below_floor} early + ${radar.integrity.parent_above_floor} parent-linked) of ${radar.integrity.snapshot_total} snapshot protocols (${radar.integrity.live_token_total} live-token peers [${radar.integrity.live_valuation_peers} val comps], ${radar.integrity.excluded_pre_total} excluded pre-token [${radar.integrity.excluded_cex} CEX, ${radar.integrity.excluded_product_above_floor + radar.integrity.excluded_product_below_floor} product-rule], ${radar.integrity.unaccounted} unaccounted)\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dashFiles.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
