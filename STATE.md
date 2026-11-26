@@ -133,3 +133,9 @@ Tally vs hypothetical top-10 composites: **3 wins / 2 losses** (game scores ~0.3
 ## Conversations
 - agy session 1 (initial build, Slices 1–5): `cb427069-8c9c-4bc4-9554-f6670dbd72d1`
 - agy session 2 (mechanics §6 revision, R1–R8): `ff6d771c-a292-499c-8852-9f3cda8637fb`
+
+## Session 4 (R10 — README + git identity, submitter subagent 2026-11-26 ~22:50 WIB)
+- Git identity fixed: local repo config now `AbralDevv <94212582+AbralDevv@users.noreply.github.com>`. All commits BEFORE this session remain authored `mellow-badger-39-1687 <mellow-badger-39-1687@make.fun>` (history NOT rewritten — nothing had been pushed; new commits carry the correct author).
+- Commit `2b25667` (AbralDevv): `README.md` with the 3 live make.fun badges (`token-radar-01.svg`, `rank.svg`, `reward.svg` for `AbralDevv/token-radar-01`) + link to `https://make.fun/bounty/token-radar-01`. Repo name chosen: `token-radar-01` under `AbralDevv` (to be created public on GitHub; created-after-open satisfied automatically).
+- Fresh-run re-verified at `2b25667`: `node main.ts` reproduces `board.json` 424,944 B / `data.js` 594,450 B / `dossier.json` 1,157,012 B, 198 rows, 2-run determinism PASS; `scripts/heldout.mjs` 10/10 PASS.
+- BLOCKER (unchanged): no GitHub credential on this machine (`gh` not logged in, no `~/.git-credentials`, no `~/.netrc`, no `GH_TOKEN`/`GITHUB_TOKEN` in shell env). Public repo creation + push needs the parent/browser (logged in as AbralDevv) — see submitter report 2026-11-26 ~22:5x WIB for exact steps.
