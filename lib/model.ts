@@ -2,9 +2,9 @@
 //
 // HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot):
 //   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward):
-//     - Walk-Forward median error: x2.61 vs x4.14 flat 0.25x TVL (1.59x tighter, gmX x4.73 vs x6.18, R2 +0.055 vs -0.238)
+//     - Walk-Forward median error: x2.43 vs x4.14 flat 0.25x TVL (1.71x tighter, gmX x4.78 vs x6.18, R2 +0.059 vs -0.238)
 //     - Leave-One-Out median error: x3.40 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
-//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity, Category peer residual (n>=3, k=8)
+//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity, Category peer residual (n>=5, k=12)
 //     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
 //   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
 //     - Leave-One-Out: AUC 0.715, Brier 0.2113 vs 0.2484 base (-14.9% error), Log-Loss 0.6148 vs 0.6900
@@ -24,7 +24,7 @@
 //   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers):
 //      log(MCap / TVL) = b0 + b_tvl * log(TVL / floor_usd) + cat_log_adj
 //      - size_multiple = exp(b0 + b_tvl * log(TVL / floor_usd))   [sub-linear TVL scale curve]
-//      - cat_multiple  = exp((n * median(cat_res)) / (n + 8))     [empirical Bayes shrinkage, n >= 3]
+//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))    [empirical Bayes shrinkage, n >= 5]
 //      - cond_value_usd = TVL * clamp(size_multiple * cat_multiple, 0.015, 6.0)
 //      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals.
 //
@@ -98,8 +98,8 @@ export const MODEL_CONFIG: ModelConfig = {
   huber_delta: 1.0,
   huber_ridge: 2.0,
   huber_iters: 30,
-  cat_min_peers: 3,
-  cat_shrinkage_k: 8,
+  cat_min_peers: 5,
+  cat_shrinkage_k: 12,
   ratio_floor: 0.015,
   ratio_cap: 6.0,
   logit_ridge: 3.0,
@@ -827,7 +827,7 @@ export function fitSnapshotModels(
     odds_wf_auc: round4(oddsWfStat.auc),
     odds_wf_brier: round4(oddsWfStat.brier),
     odds_wf_base_brier: round4(oddsWfBaseStat.brier),
-    val_kept: ['TVL size elasticity', 'Category peer residual (n>=3, k=8)'],
+    val_kept: ['TVL size elasticity', 'Category peer residual (n>=5, k=12)'],
     val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
     odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=8)', 'TVL scale', 'Multi-chain breadth'],
     odds_dropped: ['7d TVL growth (neg. beta)'],

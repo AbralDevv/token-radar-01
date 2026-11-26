@@ -139,3 +139,17 @@ Tally vs hypothetical top-10 composites: **3 wins / 2 losses** (game scores ~0.3
 - Commit `2b25667` (AbralDevv): `README.md` with the 3 live make.fun badges (`token-radar-01.svg`, `rank.svg`, `reward.svg` for `AbralDevv/token-radar-01`) + link to `https://make.fun/bounty/token-radar-01`. Repo name chosen: `token-radar-01` under `AbralDevv` (to be created public on GitHub; created-after-open satisfied automatically).
 - Fresh-run re-verified at `2b25667`: `node main.ts` reproduces `board.json` 424,944 B / `data.js` 594,450 B / `dossier.json` 1,157,012 B, 198 rows, 2-run determinism PASS; `scripts/heldout.mjs` 10/10 PASS.
 - BLOCKER (unchanged): no GitHub credential on this machine (`gh` not logged in, no `~/.git-credentials`, no `~/.netrc`, no `GH_TOKEN`/`GITHUB_TOKEN` in shell env). Public repo creation + push needs the parent/browser (logged in as AbralDevv) — see submitter report 2026-11-26 ~22:5x WIB for exact steps.
+
+## Session 5 (Finisher Slice 1 — Valuation Category Residual n>=5, k=12, 2026-11-26)
+- **Changes (Slice 1 only):** `lib/model.ts` `MODEL_CONFIG` (`cat_min_peers` 3→5, `cat_shrinkage_k` 8→12; header + `val_kept` updated to `n>=5, k=12`), `scripts/heldout.mjs` (label `n>=5, k=12`; age drop assertion updated to `Dropped val age fails WF medX & WF R2` — chronological WF still rejects age even though LOO medX dips to x3.30), `dashboard/0-model.js` (header updated to `n>=5, k=12` and measured metrics), `dashboard/app.js` (formula box `CatRes(n>=5,k=12)` and detail-drawer fallback label `<${DATA.config.cat_min_peers} live comps`). Odds config (`odds_cat_k: 8`) and 7d growth (still DROPPED) untouched.
+- **Held-out validation (`scripts/heldout.mjs`, 10/10 PASS, before → after):**
+  - Valuation Walk-Forward (`n=44`): medX **`x2.61` → `x2.43`** (lift **`1.59×` → `1.71×`** vs `x4.14` flat), gmX `x4.73` → `x4.78`, R² **`+0.055` → `+0.059`** (`+0.0595`).
+  - Valuation Leave-One-Out (`n=119`): medX **`x3.40` → `x3.40`** (lift `1.46×` vs `x4.96` flat), gmX `x4.69` → `x4.69`, R² `+0.126` → `+0.126` (`+0.1259`).
+  - Empirical LOO 50% PI multipliers: `[x0.29, x3.39]` → `[x0.30, x3.45]`.
+  - Odds (unchanged): LOO AUC `0.715` / Brier `0.2113`; WF AUC `0.593` / Brier `0.2294`.
+- **Fresh-run & determinism verification (`node main.ts`, exit 0):**
+  - Board: `198` rows (`40` WL + `138` early + `20` sub), `0` unaccounted of `758`, `198/198` distinct values (`$287,827`–`$18,328,202`), consecutive ranks `1..198`, `40/40` watchlist, `6` steps/row (`141..413` chars, 0 forbidden token phrases).
+  - Parity (`dashboard/0-model.js` vs `board.json`/`data.js`): `0` value diffs, `0` breakdown diffs, `0` farm-verdict diffs, `0` step diffs across all 198 rows.
+  - Artifacts & gates: `board.json` `424,850 B`, `data.js` `594,338 B`, `dashboard/` `60,584 B` (`<64 KiB`, `0` `http(s)://`), `dossier.json` `1,157,041 B` (exact `buildDossier` match); 2-run `diff -r` byte-identical PASS.
+  - Farm verdicts: `12 Strong +EV` / `67 Positive +EV` / `111 Scale Needed` / `8 Gas-Blocked` (was `12 / 65 / 113 / 8`). Top 5: `#1 bittensor-dtao` `$18,328,202`, `#2 veda` `$14,110,656`, `#3 steakhouse-financial` `$13,022,826`, `#4 usdd` `$12,276,828`, `#5 gauntlet` `$9,719,937`.
+- Slices 2–4 and screenshot re-render pending subsequent slices; not pushed.

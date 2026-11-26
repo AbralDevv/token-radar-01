@@ -3,13 +3,13 @@
 //
 // HELD-OUT VALIDATION SUMMARY (scripts/heldout.mjs on sealed 2026-11-14 snapshot, 758 protocols):
 //   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS on 119 non-CEX live peers:
-//       - Walk-Forward (n=44, strictly prior listed_at): x2.61 median error vs x4.14 flat 0.25x TVL
-//         (1.59x tighter; gmX x4.73 vs x6.18; R2 +0.055 vs -0.238)
+//       - Walk-Forward (n=44, strictly prior listed_at): x2.43 median error vs x4.14 flat 0.25x TVL
+//         (1.71x tighter; gmX x4.78 vs x6.18; R2 +0.059 vs -0.238)
 //       - Leave-One-Out (n=119): x3.40 median error vs x4.96 flat 0.25x TVL
 //         (1.46x tighter; gmX x4.69 vs x5.79; R2 +0.126 vs -0.037)
-//       - KEPT: TVL size elasticity, Empirical Category peer residual (n>=3, shrinkage k=8)
+//       - KEPT: TVL size elasticity, Empirical Category peer residual (n>=5, shrinkage k=12)
 //       - DROPPED (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
-//       - Honest Range: empirical 50% PI [x0.29, x3.39] calibrated from LOO residuals
+//       - Honest Range: empirical 50% PI [x0.30, x3.45] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression on 442 clean protocols:
 //       - Leave-One-Out (n=442): AUC 0.715, Brier 0.2113 vs 0.2484 base (-14.9% error)
 //       - Walk-Forward  (n=192): AUC 0.593, Brier 0.2294 vs 0.2870 base (-20.1% error)
