@@ -11,9 +11,9 @@
 //       - DROPPED (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
 //       - Honest Range: empirical 50% PI [x0.30, x3.45] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression on 442 clean protocols:
-//       - Leave-One-Out (n=442): AUC 0.715, Brier 0.2113 vs 0.2484 base (-14.9% error)
-//       - Walk-Forward  (n=192): AUC 0.593, Brier 0.2294 vs 0.2870 base (-20.1% error)
-//       - KEPT: Listed age (2y survival hazard), Category token rate (k=8), TVL scale, Chains
+//       - Leave-One-Out (n=442): AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error)
+//       - Walk-Forward  (n=192): AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error)
+//       - KEPT: Listed age (survival hazard), Category token rate (k=16), TVL scale, Chains
 //       - DROPPED: 7d TVL growth (negative snapshot-week market-beta artifact)
 //   [3] Implied Launch EV = max(1, round(TVL * clamp(size_mult * cat_mult, 0.015, 6.0) * launch_odds))
 (() => {
@@ -41,15 +41,14 @@
     const condValue = row.tvl_usd * effMult;
 
     const ageUsed = row.age_days != null ? row.age_days : fitted.odds_median_age_days;
-    const logAgeRef = Math.log1p(365);
     const logCh = Math.log2(Math.max(1, (row.chains || []).length));
     const baseZ =
       fitted.odds_intercept +
       fitted.odds_tvl_slope * (logTvl - logFloor) +
       fitted.odds_chain_slope * logCh +
       fitted.odds_cat_slope * row.cat_log_odds;
-    const pNow = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed) - logAgeRef));
-    const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed + horizon) - logAgeRef));
+    const pNow = sigmoid(baseZ + fitted.odds_age_slope * (ageUsed / 365 - 1));
+    const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * ((ageUsed + horizon) / 365 - 1));
     const rawHazard = clamp((pHorizon - pNow) / Math.max(0.05, 1 - pNow), fitted.hazard_floor, fitted.hazard_cap);
     const parentFactor = row.cohort === 'pre-parent' ? parentProb : 1;
     const launchOdds = rawHazard * parentFactor;

@@ -7,9 +7,9 @@
 //     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity, Category peer residual (n>=5, k=12)
 //     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
 //   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
-//     - Leave-One-Out: AUC 0.715, Brier 0.2113 vs 0.2484 base (-14.9% error), Log-Loss 0.6148 vs 0.6900
-//     - Walk-Forward:  AUC 0.593, Brier 0.2294 vs 0.2870 base (-20.1% error), Log-Loss 0.6723 vs 0.7693
-//     - KEPT odds terms (all 4 positive & pass WF + LOO): Listed age, Category token rate, Multi-chain breadth, TVL scale
+//     - Leave-One-Out: AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error), Log-Loss 0.5898 vs 0.6900
+//     - Walk-Forward:  AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error), Log-Loss 0.6032 vs 0.7693
+//     - KEPT odds terms (all 4 positive & pass WF + LOO): Listed age (survival hazard), Category token rate (k=16), Multi-chain breadth, TVL scale
 //     - DROPPED odds term: 7d TVL growth (spurious negative snapshot-week drawdown beta artifact)
 //
 // Applies the snapshot's structural product rule BEFORE ranking so only genuine pre-token
@@ -29,7 +29,7 @@
 //      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals.
 //
 //   2. Empirical Token Launch Odds (L2 logistic survival hazard on 442 clean protocols):
-//      F(t | x) = sigmoid(w0 + w_age*(ln(1+t)-ln(1+365)) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo)
+//      F(t | x) = sigmoid(w0 + w_age*(t/365 - 1) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo)
 //      - 2-year conditional launch hazard: hazard_2y = clamp((F(t + 730) - F(t)) / max(0.05, 1 - F(t)), 0.05, 0.85)
 //      - Above-floor non-watchlist rows (DefiLlama parentProtocol present) apply snapshot-derived
 //        parent_tokenless_prob = 1 - clean_live_token_rate (zero arbitrary constants).
@@ -104,7 +104,7 @@ export const MODEL_CONFIG: ModelConfig = {
   ratio_cap: 6.0,
   logit_ridge: 3.0,
   logit_iters: 20,
-  odds_cat_k: 8,
+  odds_cat_k: 16,
   horizon_days: 730,
   hazard_floor: 0.05,
   hazard_cap: 0.85,
@@ -729,10 +729,9 @@ export function fitSnapshotModels(
       const sp = (h + cfg.odds_cat_k * trBase) / (t + cfg.odds_cat_k);
       catLO.set(cat, Math.log(sp / (1 - sp)) - bLO);
     }
-    const logAgeRef = Math.log1p(365);
     const feat = (d: (typeof cleanObs)[number]) => [
       1,
-      Math.log1p(d.age ?? trMedAge) - logAgeRef,
+      (d.age ?? trMedAge) / 365 - 1,
       d.logTvl - logFloor,
       d.logChains,
       catLO.get(d.cat) ?? 0,
@@ -829,7 +828,7 @@ export function fitSnapshotModels(
     odds_wf_base_brier: round4(oddsWfBaseStat.brier),
     val_kept: ['TVL size elasticity', 'Category peer residual (n>=5, k=12)'],
     val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
-    odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=8)', 'TVL scale', 'Multi-chain breadth'],
+    odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=16)', 'TVL scale', 'Multi-chain breadth'],
     odds_dropped: ['7d TVL growth (neg. beta)'],
   };
 
@@ -906,15 +905,14 @@ export function scorePreToken(
 
   const age = ageDays(asOf, p.listed_at);
   const ageUsed = age ?? fitted.odds_median_age_days;
-  const logAgeRef = Math.log1p(365);
   const logCh = Math.log2(Math.max(1, p.chains.length));
   const baseZ =
     fitted.odds_intercept +
     fitted.odds_tvl_slope * (logTvl - logFloor) +
     fitted.odds_chain_slope * logCh +
     fitted.odds_cat_slope * comp.cat_log_odds;
-  const pNow = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed) - logAgeRef));
-  const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * (Math.log1p(ageUsed + fitted.horizon_days) - logAgeRef));
+  const pNow = sigmoid(baseZ + fitted.odds_age_slope * (ageUsed / 365 - 1));
+  const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * ((ageUsed + fitted.horizon_days) / 365 - 1));
   const rawHazard = clamp((pHorizon - pNow) / Math.max(0.05, 1 - pNow), fitted.hazard_floor, fitted.hazard_cap);
   const parentFactor = cohort === 'pre-parent' ? fitted.parent_tokenless_prob : 1;
   const launchOdds = rawHazard * parentFactor;

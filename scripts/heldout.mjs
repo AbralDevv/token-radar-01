@@ -173,7 +173,7 @@ function fitOddsSpec(train, spec) {
   }
   const feat = (d) => {
     const v = [1];
-    if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
+    if (spec.age) v.push((d.age ?? medAge) / 365 - 1);
     if (spec.tvl) v.push(d.logTvl - logFloor);
     if (spec.chains) v.push(d.logChains);
     if (spec.cat) v.push(catLO.get(d.cat) ?? 0);
@@ -284,8 +284,8 @@ console.log('Term / Model                         | WF AUC  WF Brier  WF LL  | L
 console.log('-------------------------------------+--------------------------+--------------------------+--------');
 for (const [label, r, verdict] of [
   ['Baseline: Base rate (55.2%)', oddsBase, 'BASE'],
-  ['+ Listed age (maturity)', oddsAge, 'KEEP'],
-  ['+ Category token rate (k=8)', oddsAgeCat, 'KEEP'],
+  ['+ Listed age (linear years)', oddsAge, 'KEEP'],
+  ['+ Category token rate (k=16)', oddsAgeCat, 'KEEP'],
   ['+ Multi-chain breadth', oddsAgeCatCh, 'KEEP'],
   ['+ TVL scale', oddsKept, 'KEEP'],
   ['+ 7d TVL growth (neg. beta)', oddsPlusGrowth, 'DROP'],

@@ -153,3 +153,21 @@ Tally vs hypothetical top-10 composites: **3 wins / 2 losses** (game scores ~0.3
   - Artifacts & gates: `board.json` `424,850 B`, `data.js` `594,338 B`, `dashboard/` `60,584 B` (`<64 KiB`, `0` `http(s)://`), `dossier.json` `1,157,041 B` (exact `buildDossier` match); 2-run `diff -r` byte-identical PASS.
   - Farm verdicts: `12 Strong +EV` / `67 Positive +EV` / `111 Scale Needed` / `8 Gas-Blocked` (was `12 / 65 / 113 / 8`). Top 5: `#1 bittensor-dtao` `$18,328,202`, `#2 veda` `$14,110,656`, `#3 steakhouse-financial` `$13,022,826`, `#4 usdd` `$12,276,828`, `#5 gauntlet` `$9,719,937`.
 - Slices 2–4 and screenshot re-render pending subsequent slices; not pushed.
+
+## Session 6 (Finisher Slice 2 — Odds Age Linear-Years + Category k=16, 2026-11-26)
+- **Changes (Slice 2 only):** `lib/model.ts` (`MODEL_CONFIG.odds_cat_k` 8→16; `fitOddsFold` feat age `(d.age ?? trMedAge) / 365 - 1`; `scorePreToken` `pNow` `ageUsed / 365 - 1` and `pHorizon` `(ageUsed + fitted.horizon_days) / 365 - 1`, dropping `logAgeRef`; header summary/formula + `odds_kept` updated to `Listed age (survival hazard)`, `Category token rate (k=16)`), `scripts/heldout.mjs` (`fitOddsSpec` mirrored to linear-years `(d.age ?? medAge) / 365 - 1`; table labels updated to linear years + `k=16`), `dashboard/0-model.js` (header summary + `recomputeRow` odds age terms mirrored verbatim). Valuation config (`n>=5, k=12`), farm verdict rules, and 7d growth (still DROPPED) untouched.
+- **Held-out validation (`scripts/heldout.mjs`, 10/10 PASS, Slice 1 → Slice 2):**
+  - Token Launch Odds Walk-Forward (`n=192`): AUC **`0.593` → `0.635`** (`0.6352`), Brier **`0.2294` → `0.2086`** vs `0.2870` base (`-20.1%` → `-27.3%` error), Log-Loss **`0.6723` → `0.6032`** vs `0.7693`.
+  - Token Launch Odds Leave-One-Out (`n=442`): AUC **`0.715` → `0.746`** (`0.7459`), Brier **`0.2113` → `0.2016`** vs `0.2484` base (`-14.9%` → `-18.8%` error), Log-Loss **`0.6148` → `0.5898`** vs `0.6900`.
+  - All 4 kept odds slopes positive (`age +0.5952`, `tvl +0.2466`, `chains +0.1314`, `cat +1.3986`); 7d growth beta in odds = **`-0.7420`** (was `-0.7919`, still negative snapshot-week artifact → DROPPED).
+  - Valuation (unchanged): WF medX `x2.43` (`1.71×` lift, R² `+0.059`), LOO medX `x3.40` (`1.46×` lift, R² `+0.126`), 50% PI `[x0.30, x3.45]`.
+- **Fresh-run, parity & determinism verification (`node main.ts`, exit 0):**
+  - Board: `198` rows (`40` WL + `138` early + `20` sub), `0` unaccounted of `758`, `198/198` distinct values (`$335,651`–`$33,133,425`), consecutive ranks `1..198` strictly non-increasing, `40/40` watchlist, `6` steps/row (`141..413` chars, `0` forbidden token phrases, `0` product-rule violations).
+  - Parity (`dashboard/0-model.js` vs `board.json`/`data.js`): `0` value diffs, `0` breakdown diffs, `0` farm-verdict diffs, `0` step diffs across all 198 rows.
+  - Artifacts & gates: `board.json` `425,028 B`, `data.js` `594,274 B`, `dashboard/` `60,517 B` (`<64 KiB`, `0` `http(s)://`), `dossier.json` `1,156,973 B` (`60,858 B` text, `3` images, exact `buildDossier` byte match); 2-run `diff -r` byte-identical PASS.
+- **Board shakeup note (independently revertible Slice B):**
+  - Measured vs Slice-1 (`1470458`) board: top-10 overlap **`7/10`** (combined A+B vs pre-Slice-1 baseline: `6/10`), top-20 overlap **`14/20`**, mean `|Δrank|` **`29.49`**, max move **`107`**. Odds range `0.0860`–`0.6733`, median `0.4628` (no cap/floor saturation). New top-20 composition: `19` watchlist + `1` pre-parent (`0` product-rule issues).
+  - New top 5: `#1 steakhouse-financial` `$33,133,425` (was `#3` `$13,022,826`), `#2 veda` `$32,059,842` (was `#2` `$14,110,656`), `#3 usdd` `$26,954,070` (was `#4` `$12,276,828`), `#4 gauntlet` `$24,968,803` (was `#5` `$9,719,937`), `#5 upshift` `$18,717,530` (was `#9` `$7,451,508`); previous `#1 bittensor-dtao` moves to `#6` `$16,485,109`.
+  - Farm verdicts (Slice 1 → Slice 2, thresholds untouched): `12 → 59 Strong +EV`, `67 → 58 Positive +EV`, `111 → 79 Scale Needed`, `8 → 2 Gas-Blocked` (higher implied values on mature protocols raise gross EV).
+  - Consequence of linear-years age hazard rewarding time-with-no-token maturity (not a bug); shipped as its own commit so Slice 2 stays independently revertible.
+- Slices 3–4 and screenshot re-render pending subsequent slices; not pushed.
