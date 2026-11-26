@@ -268,6 +268,7 @@ export interface RadarRow {
   launch_odds: number;
   cat_log_odds: number;
   farm: FarmVerdict;
+  steps: FarmStep[];
 }
 
 /** Unranked live-token calibration peer shown in the separate Comps tab. */
@@ -1340,73 +1341,66 @@ export function buildRadar(
       (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0),
   );
 
-  const board: BoardRow[] = candidates.map((s, idx) => ({
-    rank: idx + 1,
-    slug: s.p.slug,
-    name: s.p.name,
-    category: s.p.category,
-    chains: s.p.chains,
-    tvl_usd: s.p.tvl_usd,
-    change_7d: s.p.change_7d,
-    mcap_usd: s.p.mcap_usd,
-    listed_at: s.p.listed_at,
-    gecko_id: s.p.gecko_id,
-    symbol: s.p.symbol,
-    watchlist: watchlistSet.has(s.p.slug),
-    token_status: 'no-token-recorded',
-    cohort: s.cohort,
-    age_days: s.breakdown.age_days,
-    implied_value_usd: s.implied,
-    model: s.breakdown,
-    farm_steps: farmSteps(s.p, s.breakdown.age_days, s.cohort).map(stepText),
-  }));
-
-  const rows: RadarRow[] = board.map((r) => ({
-    rank: r.rank,
-    slug: r.slug,
-    name: r.name,
-    category: r.category,
-    chains: r.chains,
-    tvl_usd: r.tvl_usd,
-    change_7d: r.change_7d,
-    listed_at: r.listed_at,
-    watchlist: r.watchlist,
-    token_status: r.token_status,
-    cohort: r.cohort,
-    age_days: r.age_days,
-    age_used_days: r.model.age_used_days,
-    implied_value_usd: r.implied_value_usd,
-    cond_value_usd: r.model.cond_value_usd,
-    range_low_usd: r.model.range_low_usd,
-    range_high_usd: r.model.range_high_usd,
-    size_multiple: r.model.size_multiple,
-    cat_multiple: r.model.cat_multiple,
-    cat_peer_count: r.model.cat_peer_count,
-    cat_source: r.model.cat_source,
-    effective_multiple: r.model.effective_multiple,
-    p_now: r.model.p_now,
-    p_horizon: r.model.p_horizon,
-    raw_hazard_2y: r.model.raw_hazard_2y,
-    parent_factor: r.model.parent_factor,
-    launch_odds: r.model.launch_odds,
-    cat_log_odds: r.model.cat_log_odds,
-    farm: computeFarmVerdict(
-      {
-        slug: r.slug,
-        name: r.name,
-        category: r.category,
-        chains: r.chains,
-        tvl_usd: r.tvl_usd,
-        change_7d: r.change_7d,
-        mcap_usd: r.mcap_usd,
-        listed_at: r.listed_at,
-        gecko_id: r.gecko_id,
-        symbol: r.symbol,
-      },
-      r.age_days,
-      r.implied_value_usd,
-    ),
-  }));
+  const board: BoardRow[] = [];
+  const rows: RadarRow[] = [];
+  for (let idx = 0; idx < candidates.length; idx++) {
+    const s = candidates[idx]!;
+    const steps = farmSteps(s.p, s.breakdown.age_days, s.cohort);
+    const rank = idx + 1;
+    const isWl = watchlistSet.has(s.p.slug);
+    board.push({
+      rank,
+      slug: s.p.slug,
+      name: s.p.name,
+      category: s.p.category,
+      chains: s.p.chains,
+      tvl_usd: s.p.tvl_usd,
+      change_7d: s.p.change_7d,
+      mcap_usd: s.p.mcap_usd,
+      listed_at: s.p.listed_at,
+      gecko_id: s.p.gecko_id,
+      symbol: s.p.symbol,
+      watchlist: isWl,
+      token_status: 'no-token-recorded',
+      cohort: s.cohort,
+      age_days: s.breakdown.age_days,
+      implied_value_usd: s.implied,
+      model: s.breakdown,
+      farm_steps: steps.map(stepText),
+    });
+    rows.push({
+      rank,
+      slug: s.p.slug,
+      name: s.p.name,
+      category: s.p.category,
+      chains: s.p.chains,
+      tvl_usd: s.p.tvl_usd,
+      change_7d: s.p.change_7d,
+      listed_at: s.p.listed_at,
+      watchlist: isWl,
+      token_status: 'no-token-recorded',
+      cohort: s.cohort,
+      age_days: s.breakdown.age_days,
+      age_used_days: s.breakdown.age_used_days,
+      implied_value_usd: s.implied,
+      cond_value_usd: s.breakdown.cond_value_usd,
+      range_low_usd: s.breakdown.range_low_usd,
+      range_high_usd: s.breakdown.range_high_usd,
+      size_multiple: s.breakdown.size_multiple,
+      cat_multiple: s.breakdown.cat_multiple,
+      cat_peer_count: s.breakdown.cat_peer_count,
+      cat_source: s.breakdown.cat_source,
+      effective_multiple: s.breakdown.effective_multiple,
+      p_now: s.breakdown.p_now,
+      p_horizon: s.breakdown.p_horizon,
+      raw_hazard_2y: s.breakdown.raw_hazard_2y,
+      parent_factor: s.breakdown.parent_factor,
+      launch_odds: s.breakdown.launch_odds,
+      cat_log_odds: s.breakdown.cat_log_odds,
+      farm: computeFarmVerdict(s.p, s.breakdown.age_days, s.implied),
+      steps,
+    });
+  }
 
   const radar: RadarData = {
     as_of: snapshot.as_of,
