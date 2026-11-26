@@ -179,6 +179,15 @@ export interface FarmStep {
 /** Per-row costed farm verdict written to data.js (never to board.json). */
 export type VerdictLabel = 'Strong +EV' | 'Positive +EV' | 'Scale Needed' | 'Gas-Blocked';
 
+/** One deposit tier of the same farm verdict: same gas, hold, and 5% benchmark, different capital. */
+export interface FarmTier {
+  deposit_usd: number;
+  gross_ev_usd: number;
+  net_after_gas_usd: number;
+  net_per_hour: number;
+  verdict: VerdictLabel;
+}
+
 export interface FarmVerdict {
   primary_chain: string;
   deposit_usd: number;
@@ -193,6 +202,8 @@ export interface FarmVerdict {
   breakeven_deposit_usd: number;
   capital_drag_usd: number;
   verdict: VerdictLabel;
+  /** Deposit tiers (0.5x / 1x / 2.5x base deposit): same gas, hold, benchmark — shows the capital scale at which the farm turns +EV. */
+  tiers: FarmTier[];
 }
 
 /** Per-row auditable valuation and token-odds arithmetic breakdown. */
@@ -1044,6 +1055,17 @@ export function holdDaysFor(age: number | null): number {
   return 30;
 }
 
+/** Shared verdict rule for the headline deposit and every deposit tier. */
+export function verdictFor(netPerHour: number, deposit: number, breakevenDeposit: number): VerdictLabel {
+  return netPerHour >= 3 && deposit >= 2 * breakevenDeposit
+    ? 'Strong +EV'
+    : netPerHour > 0
+      ? 'Positive +EV'
+      : breakevenDeposit <= 50_000
+        ? 'Scale Needed'
+        : 'Gas-Blocked';
+}
+
 /**
  * Per-row costed farm economics derived strictly from the row's deposit tier, chain gas bounds,
  * hold window, Steps 1-6 active hours, and probability-weighted implied launch value under an
@@ -1070,14 +1092,16 @@ export function computeFarmVerdict(
   const breakevenDeposit = Math.ceil(gasMid / Math.max(1e-9, yieldRate));
   const capitalDrag = round2(deposit * FARM_RISK_FREE_APR * (hold / 365));
 
-  const verdict: VerdictLabel =
-    netPerHour >= 3 && deposit >= 2 * breakevenDeposit
-      ? 'Strong +EV'
-      : netPerHour > 0
-        ? 'Positive +EV'
-        : breakevenDeposit <= 50_000
-          ? 'Scale Needed'
-          : 'Gas-Blocked';
+  const verdict = verdictFor(netPerHour, deposit, breakevenDeposit);
+  // Deposit tiers: same gas, hold, and benchmark; only capital changes, so net $/hr scales
+  // linearly and the table shows exactly where the farm turns +EV.
+  const tierFor = (dep: number): FarmTier => {
+    const g = round2(dep * yieldRate);
+    const n = round2(g - gasMid);
+    const nph = round2(n / activeHours);
+    return { deposit_usd: dep, gross_ev_usd: g, net_after_gas_usd: n, net_per_hour: nph, verdict: verdictFor(nph, dep, breakevenDeposit) };
+  };
+  const tiers = [0.5, 1, 2.5].map((m) => tierFor(deposit * m));
 
   return {
     primary_chain: cp.primary,
@@ -1093,6 +1117,7 @@ export function computeFarmVerdict(
     breakeven_deposit_usd: breakevenDeposit,
     capital_drag_usd: capitalDrag,
     verdict,
+    tiers,
   };
 }
 

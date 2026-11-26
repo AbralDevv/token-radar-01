@@ -27,6 +27,7 @@
   const fPr = (p) => (p == null || !isFinite(p) ? 'n/a' : `${(p * 100).toFixed(1)}%`);
   const fAge = (d) => (d == null ? 'unlisted' : d >= 365 ? `${(d / 365).toFixed(1)}y` : `${Math.max(0, Math.round(d))}d`);
   const fHr = (n) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}/hr`;
+  const fmtExp = () => `exp(${FIT.val_intercept} ${FIT.val_tvl_slope < 0 ? '-' : '+'} ${Math.abs(FIT.val_tvl_slope)}·ln(TVL/$50M))`;
 
   const dirty = () => Math.abs(S.sbTvl - FIT.val_tvl_slope) > 1e-4 || Math.abs(S.sbCat - 1) > 1e-4 || Math.abs(S.sbHor - FIT.horizon_days) > 1 || Math.abs(S.sbPar - FIT.parent_tokenless_prob) > 1e-4;
   const sbOpts = () => ({ tvlSlope: S.sbTvl, catWeight: S.sbCat, horizonDays: S.sbHor, parentProb: S.sbPar });
@@ -319,7 +320,7 @@
     return E('section', { class: 'method-grid', id: 'methodology' },
       E('article', { class: 'card' },
         E('h2', { text: `Fitted Valuation, Launch Odds & Held-Out Term Selection (${DATA.model_version})` }),
-        E('div', { class: 'formula-box', text: `Implied EV = TVL × exp(${FIT.val_intercept} + ${FIT.val_tvl_slope}·ln(TVL/$50M)) × CatRes(n>=3,k=8) × LaunchOdds_2y\n50% PI = [×${FIT.pi50_low_mult.toFixed(2)}, ×${FIT.pi50_high_mult.toFixed(2)}] (${HO.val_loo_n} LOO residuals) · Parent prior = ${(FIT.parent_tokenless_prob * 100).toFixed(1)}% (1 - ${FIT.odds_base_token_rate.toFixed(3)})` }),
+        E('div', { class: 'formula-box', text: `Implied EV = TVL × ${fmtExp()} × CatRes(n>=3,k=8) × LaunchOdds_2y\n50% PI = [×${FIT.pi50_low_mult.toFixed(2)}, ×${FIT.pi50_high_mult.toFixed(2)}] (${HO.val_loo_n} LOO residuals) · Parent prior = ${(FIT.parent_tokenless_prob * 100).toFixed(1)}% (1 - ${FIT.odds_base_token_rate.toFixed(3)})` }),
         E('table', { class: 'ho-table' },
           E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Dropped Decision' }))),
           E('tbody', null,
@@ -378,7 +379,7 @@
         E('h3', null, E('span', { text: 'Auditable Valuation & Launch Odds Breakdown' }), E('span', { class: 'parity-note', text: parity ? '✓ Matches board.json exact $' : 'Sandbox live estimate' })),
         E('div', { class: 'breakdown-grid' },
           bdRow('1. Snapshot TVL', 'Reported total value locked', fEx(row.tvl_usd)),
-          bdRow('2. TVL Size Mult', `exp(${FIT.val_intercept} + ${FIT.val_tvl_slope}·ln(TVL/$50M))`, `× ${chk.size_multiple.toFixed(4)}`),
+          bdRow('2. TVL Size Mult', fmtExp(), `× ${chk.size_multiple.toFixed(4)}`),
           bdRow('3. Category Residual', row.cat_source === 'category-shrunk' ? `${row.category} (${row.cat_peer_count} live comps, k=${DATA.config.cat_shrinkage_k})` : 'Global fallback (<3 live comps)', `× ${chk.cat_multiple.toFixed(4)}`),
           bdRow('4. Cond. Launch Val', `TVL × clamped eff mult (${chk.effective_multiple.toFixed(4)}x)`, fEx(chk.cond_value_usd)),
           bdRow('5. 2y Launch Odds', `Survival hazard ${fPr(chk.raw_hazard_2y)}${chk.parent_factor < 1 ? ` × ${chk.parent_factor.toFixed(3)} parent prior` : ' (standalone)'}`, `× ${fPr(chk.launch_odds)}`),
@@ -394,6 +395,11 @@
           E('div', { class: 'vb-cell' }, E('span', { text: 'Active / Gross EV' }), E('b', { text: `${f.active_hours.toFixed(2)}h / $${f.gross_ev_usd.toFixed(2)}` })),
         ),
         E('p', { class: 'verdict-note', text: `From $${f.deposit_usd.toLocaleString('en-US')} deposit tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps under illustrative 5% TVL-pro-rata benchmark (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}). Not an airdrop promise.` }),
+        E('div', { class: 'tier-table' },
+          E('div', { class: 'tier-head' }, E('span', { text: 'Deposit tier' }), E('span', { class: 'num', text: 'Gross EV' }), E('span', { class: 'num', text: 'Net $/hr' }), E('span', { text: 'Verdict' })),
+          (f.tiers || []).map((t) => E('div', { class: 'tier-row' }, E('span', { text: `$${t.deposit_usd.toLocaleString('en-US')}` }), E('span', { class: 'num', text: `$${t.gross_ev_usd.toFixed(2)}` }), E('span', { class: `num ${t.net_per_hour > 0 ? 'pos' : 'neg'}`, text: fHr(t.net_per_hour) }), vBadge(t.verdict))),
+        ),
+        E('p', { class: 'verdict-note', text: 'Same gas, hold window and 5% benchmark at every tier — only the deposit changes, so the table shows the capital scale at which this farm turns +EV.' }),
       ),
       E('section', { class: 'drawer-sec' },
         E('h3', { text: 'Protocol-Specific Farm Plan (6 Concrete Costed Steps)' }),

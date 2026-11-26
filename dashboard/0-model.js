@@ -84,6 +84,7 @@
   const holdDaysFor = (age) => (age == null ? 45 : age < 120 ? 60 : age < 365 ? 45 : 30);
 
   /** Recompute per-row costed farm verdict (matches lib/model.ts computeFarmVerdict() verbatim). */
+  function verdictFor(nph, dep, be) { return nph >= 3 && dep >= 2 * be ? 'Strong +EV' : nph > 0 ? 'Positive +EV' : be <= 50000 ? 'Scale Needed' : 'Gas-Blocked'; }
   function computeFarmVerdict(row, impliedUsd) {
     const g = gasBoundsOf(row.chains), deposit = capitalFor(row.tvl_usd, g.p), hold = holdDaysFor(row.age_days), wks = hold / 7;
     const gasLow = round2(g.prepLo + g.entLo + g.wkLo * wks), gasHigh = round2(g.prepHi + g.entHi + g.wkHi * wks);
@@ -91,8 +92,10 @@
     const yieldRate = FARM_BENCHMARK_SHARE * (impliedUsd / Math.max(1, row.tvl_usd));
     const grossEv = round2(deposit * yieldRate), netAfterGas = round2(grossEv - gasMid), netPerHour = round2(netAfterGas / activeHours);
     const breakevenDeposit = Math.ceil(gasMid / Math.max(1e-9, yieldRate)), capitalDrag = round2(deposit * FARM_RISK_FREE_APR * (hold / 365));
-    const verdict = netPerHour >= 3 && deposit >= 2 * breakevenDeposit ? 'Strong +EV' : netPerHour > 0 ? 'Positive +EV' : breakevenDeposit <= 50000 ? 'Scale Needed' : 'Gas-Blocked';
-    return { primary_chain: g.p, deposit_usd: deposit, hold_days: hold, gas_low_usd: gasLow, gas_high_usd: gasHigh, gas_mid_usd: gasMid, active_hours: activeHours, gross_ev_usd: grossEv, net_after_gas_usd: netAfterGas, net_per_hour: netPerHour, breakeven_deposit_usd: breakevenDeposit, capital_drag_usd: capitalDrag, verdict };
+    const verdict = verdictFor(netPerHour, deposit, breakevenDeposit);
+    const tierFor = (dep) => { const gr = round2(dep * yieldRate), nt = round2(gr - gasMid), nph = round2(nt / activeHours); return { deposit_usd: dep, gross_ev_usd: gr, net_after_gas_usd: nt, net_per_hour: nph, verdict: verdictFor(nph, dep, breakevenDeposit) }; };
+    const tiers = [0.5, 1, 2.5].map((m) => tierFor(deposit * m));
+    return { primary_chain: g.p, deposit_usd: deposit, hold_days: hold, gas_low_usd: gasLow, gas_high_usd: gasHigh, gas_mid_usd: gasMid, active_hours: activeHours, gross_ev_usd: grossEv, net_after_gas_usd: netAfterGas, net_per_hour: netPerHour, breakeven_deposit_usd: breakevenDeposit, capital_drag_usd: capitalDrag, verdict, tiers };
   }
 
   function stepText(st) {
