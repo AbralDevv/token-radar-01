@@ -26,7 +26,7 @@
   const fPct = (n) => (n == null || !isFinite(n) ? 'n/a' : `${n > 0 ? '+' : ''}${n.toFixed(1)}%`);
   const fPr = (p) => (p == null || !isFinite(p) ? 'n/a' : `${(p * 100).toFixed(1)}%`);
   const fAge = (d) => (d == null ? 'unlisted' : d >= 365 ? `${(d / 365).toFixed(1)}y` : `${Math.max(0, Math.round(d))}d`);
-  const fHr = (n) => `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}/hr`;
+  const fHr = (n) => `${n > 0 ? '+' : n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}/hr`;
   const fmtExp = () => `exp(${FIT.val_intercept} ${FIT.val_tvl_slope < 0 ? '-' : '+'} ${Math.abs(FIT.val_tvl_slope)}·ln(TVL/$50M))`;
 
   const dirty = () => Math.abs(S.sbTvl - FIT.val_tvl_slope) > 1e-4 || Math.abs(S.sbCat - 1) > 1e-4 || Math.abs(S.sbHor - FIT.horizon_days) > 1 || Math.abs(S.sbPar - FIT.parent_tokenless_prob) > 1e-4;
@@ -173,7 +173,7 @@
         kpi('Ranked Board', `${INT.rankable_total} rows`, 'em', `${INT.watchlist} WL + ${INT.early_below_floor} early + ${INT.parent_above_floor} sub`),
         kpi('Walk-Forward', `x${HO.val_wf_med_x.toFixed(2)}`, 'em', `${HO.val_wf_lift.toFixed(2)}× lift · R² +${HO.val_wf_r2.toFixed(3)}`),
         kpi('Leave-One-Out', `x${HO.val_loo_med_x.toFixed(2)}`, 'cy', `${HO.val_loo_lift.toFixed(2)}× lift · R² +${HO.val_loo_r2.toFixed(3)}`),
-        kpi('Rank #1 EV', top ? fUsd(top.implied_value_usd) : 'n/a', 'em', top ? `${top.name} (${fPr(top.launch_odds)} odds)` : ''),
+        kpi('Rank #1 EV', top ? fUsd(top.implied_value_usd) : 'n/a', 'em', top ? `${top.name} · ${fPr(top.launch_odds)}` : ''),
         kpi('Farm +EV Rows', `${strong + pos} / ${INT.rankable_total}`, '', `${strong} Strong · ${pos} Positive`),
       ),
     );
@@ -293,7 +293,7 @@
         E('td', null, E('div', { class: 'proto-cell' }, E('div', { class: 'proto-top' }, E('span', { class: 'proto-name', text: r.name }), cBadge(r)), E('div', { class: 'proto-sub' }, E('span', { text: r.category || 'Other' }), E('span', { text: '· Records no token' })))),
         chCell, E('td', { class: 'num', text: fUsd(r.tvl_usd) }), E('td', { class: `num ${gCls}`, text: fPct(r.change_7d) }),
         E('td', { class: 'num', text: fPr(r.launch_odds) }),
-        E('td', null, E('div', { class: 'farm-cell' }, E('span', { class: `farm-rate ${f.net_per_hour > 0 ? 'pos' : 'neg'}`, text: fHr(f.net_per_hour) }), vBadge(f.verdict))),
+        E('td', null, E('div', { class: 'farm-cell' }, E('span', { class: `farm-rate ${f.net_per_hour > 0 ? 'pos' : f.net_per_hour < 0 ? 'neg' : 'flat'}`, text: fHr(f.net_per_hour) }), vBadge(f.verdict))),
         E('td', null, E('div', { class: 'val-cell' }, E('div', { class: 'val-top' }, E('div', { class: 'val-bar', 'aria-hidden': 'true' }, E('i', { style: `width:${pct}%` })), E('span', { class: 'val-num', text: fUsd(r.implied_value_usd) })), E('span', { class: 'val-range', text: `50% PI $${fSh(r.range_low_usd)}–$${fSh(r.range_high_usd)}` }))),
       );
     }));
@@ -389,7 +389,7 @@
       E('section', { class: 'drawer-sec' },
         E('h3', null, E('span', { text: `Costed Farm Verdict (${f.primary_chain} · ${f.hold_days}d Hold)` }), vBadge(f.verdict)),
         E('div', { class: 'verdict-box' },
-          E('div', { class: 'vb-cell' }, E('span', { text: 'Net $/Hour' }), E('b', { class: f.net_per_hour > 0 ? 'pos' : 'neg', text: fHr(f.net_per_hour) })),
+          E('div', { class: 'vb-cell' }, E('span', { text: 'Net $/Hour' }), E('b', { class: f.net_per_hour > 0 ? 'pos' : f.net_per_hour < 0 ? 'neg' : 'flat', text: fHr(f.net_per_hour) })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Gas Break-Even' }), E('b', { text: fEx(f.breakeven_deposit_usd) })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Tier / Gas Range' }), E('b', { text: `$${f.deposit_usd.toLocaleString('en-US')} / $${f.gas_low_usd.toFixed(2)}–$${f.gas_high_usd.toFixed(2)}` })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Active / Gross EV' }), E('b', { text: `${f.active_hours.toFixed(2)}h / $${f.gross_ev_usd.toFixed(2)}` })),
@@ -397,7 +397,7 @@
         E('p', { class: 'verdict-note', text: `From $${f.deposit_usd.toLocaleString('en-US')} deposit tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps under illustrative 5% TVL-pro-rata benchmark (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}). Not an airdrop promise.` }),
         E('div', { class: 'tier-table' },
           E('div', { class: 'tier-head' }, E('span', { text: 'Deposit tier' }), E('span', { class: 'num', text: 'Gross EV' }), E('span', { class: 'num', text: 'Net $/hr' }), E('span', { text: 'Verdict' })),
-          (f.tiers || []).map((t) => E('div', { class: 'tier-row' }, E('span', { text: `$${t.deposit_usd.toLocaleString('en-US')}` }), E('span', { class: 'num', text: `$${t.gross_ev_usd.toFixed(2)}` }), E('span', { class: `num ${t.net_per_hour > 0 ? 'pos' : 'neg'}`, text: fHr(t.net_per_hour) }), vBadge(t.verdict))),
+          (f.tiers || []).map((t) => E('div', { class: 'tier-row' }, E('span', { text: `$${t.deposit_usd.toLocaleString('en-US')}` }), E('span', { class: 'num', text: `$${t.gross_ev_usd.toFixed(2)}` }), E('span', { class: `num ${t.net_per_hour > 0 ? 'pos' : t.net_per_hour < 0 ? 'neg' : 'flat'}`, text: fHr(t.net_per_hour) }), vBadge(t.verdict))),
         ),
         E('p', { class: 'verdict-note', text: 'Same gas, hold window and 5% benchmark at every tier — only the deposit changes, so the table shows the capital scale at which this farm turns +EV.' }),
       ),

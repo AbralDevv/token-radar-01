@@ -187,3 +187,30 @@ Tally vs hypothetical top-10 composites: **3 wins / 2 losses** (game scores ~0.3
   - Parity (`dashboard/0-model.js` vs `board.json`/`data.js`): `0` value diffs, `0` breakdown diffs, `0` farm-verdict diffs across all 198 rows, `0` tier diffs across all 594 tier cells, `0` step diffs.
   - Artifacts & determinism: `data.js` `594,247 B`, `dashboard/` `60,721 B` (`<64 KiB`, `0` `http(s)://`), `dossier.json` `1,157,179 B` (`61,062 B` text, `3` images, exact `buildDossier` byte match); 2-run `diff -r` byte-identical PASS.
 - Slice 4 (dashboard parity + screenshot re-render + final validation) pending; not pushed.
+
+## Session 8 (Finisher Slice 4 — Dashboard Parity, Re-Rendered 1280×800 Screenshots & Final Validation, 2026-11-26)
+- **Dashboard parity audit & fixes:**
+  - Audited all 4 files in `dashboard/` (`0-model.js`, `app.js`, `app.css`, `index.html`): `0` remaining stale hardcoded numbers from the old model (`2.61`, `1.59`, `0.715`, `0.593`, `0.2294`, `0.2113`, `0.29`, `3.39`, `n>=3`, `k=8` valuation, `$50,000`/`50k` gas rule, `log1p`), `0` `http(s)://` references. `odds_cat_k: 16`, valuation `n>=5, k=12`, and dropped 7d growth untouched.
+  - Applied two display-parity fixes in `dashboard/app.js`: (1) zero-valued `net_per_hour` (e.g., `#1 steakhouse-financial` `$5,000` deposit tier at `$0.00/hr`) formats as neutral `$0.00/hr` (`flat`) instead of red `+$0.00/hr`; (2) Rank #1 EV KPI subtitle shortened to `${name} · ${odds}` so `Steakhouse Financial · 48.4%` renders with zero ellipsis truncation.
+  - Verified exact parity across all `198` rows (`594` tier cells) between `board.json`, `data.js`, and `dashboard/0-model.js`: `0` value diffs, `0` breakdown diffs, `0` farm-verdict diffs, `0` tier diffs, `0` step diffs.
+- **Re-rendered `1280×800` screenshots (headless Chromium `chromium-1255` from live built output; all 3 visually inspected — zero overlap/clipping, byte-equal numbers to `board.json`/`data.js`):**
+  - `screenshots/1-board.png`: `1280×800`, `239,473 B` (`233.9 KiB`) — Cover + Held-Out strip (`WF x2.43` / `1.71×`, `LOO x3.40` / `1.46×`, `Odds AUC 0.746 LOO / 0.635 WF`) + KPI cards (`Rank #1 EV $33.13M Steakhouse Financial · 48.4%`, `Farm +EV Rows 117 / 198: 59 Strong · 58 Positive`) + 758-protocol Integrity Strip + Top 9 ranked rows.
+  - `screenshots/2-detail.png`: `1280×800`, `346,477 B` (`338.4 KiB`) — New `#1 Steakhouse Financial` (`WL`, `Positive +EV`, `$33,133,425`, `✓ Matches board.json exact $`, `Global fallback (<5 live comps)`, `48.4%` 2y odds, full 3-tier progression `$5,000 Scale Needed` / `$10,000 Positive +EV` / `$25,000 Strong +EV`, 6 costed steps).
+  - `screenshots/3-filtered.png`: `1280×800`, `246,028 B` (`240.3 KiB`) — Filtered view (`Category: Lending (16)`, `Min TVL >= $50M Floor`, `★ Watchlist Only`, `Sort: Net $/hr` → 2 rows `#27 Tydro` `Strong +EV +$3.28/hr` & `#22 Curvance` `Positive +EV +$1.74/hr`) + full Held-Out Term Selection table (`CatRes(n>=5,k=12)`) + all 8 `n >= 5` Empirical Category Residuals bars with zero clipping.
+- **Final Model & Board Summary (post A+B+C, `radar-3-fitted`, snapshot `2026-11-14`):**
+  - Held-out (`scripts/heldout.mjs`, **`10/10` PASS**): Valuation WF **`x2.43`** vs `x4.14` flat (`1.71×` tighter, gmX `x4.78`, R² `+0.059`), LOO **`x3.40`** vs `x4.96` flat (`1.46×` tighter, gmX `x4.69`, R² `+0.126`), 50% PI `[x0.30, x3.45]`; Odds WF **AUC `0.635`** (Brier `0.2086`), LOO **AUC `0.746`** (Brier `0.2016`); 7d growth DROPPED on both.
+  - New Top 5 (+ `#6`): `#1 steakhouse-financial` **`$33,133,425`**, `#2 veda` **`$32,059,842`**, `#3 usdd` **`$26,954,070`**, `#4 gauntlet` **`$24,968,803`**, `#5 upshift` **`$18,717,530`**, `#6 bittensor-dtao` **`$16,485,109`**.
+  - Farm verdicts (10× deposit Gas-Blocked rule): base tier (`198` rows) `59 Strong +EV` / `58 Positive +EV` / `72 Scale Needed` / `9 Gas-Blocked`; deposit tiers (`594` cells) `189 Strong +EV` / `164 Positive +EV` / `215 Scale Needed` / `26 Gas-Blocked`.
+- **Final Validation Results (Node `v24.22.1`, Kit Level `53`):**
+  - `dashboard_files`: **PASS** — 4 files (`0-model.js` `7,895 B`, `app.css` `15,588 B`, `app.js` `36,820 B`, `index.html` `516 B`), total **`60,819 B`** (`< 64 KiB`), `0` `http(s)://`.
+  - `board_file`: **PASS** — `198` unique rows, `198` distinct whole-dollar implied values, `425,028 B` (`415.1 KiB`, ≤8 MiB).
+  - `sorted_by_value`: **PASS** — consecutive ranks `1..198`, strictly non-increasing (`$33,133,425` `#1 steakhouse-financial` down to `$335,651` `#198 monarq`).
+  - `coverage`: **PASS** — `40/40` watchlist (`100%`), `0` product-rule violations, `0` unaccounted of `758`.
+  - `farm_steps`: **PASS** — `6` steps/row across all 198 rows, `141..413` trimmed chars (`20..600`), `0` occurrences of `has/have/had no token`.
+  - `screenshots`: **PASS** — 3 valid `1280×800` PNGs: `233.9 KiB`, `338.4 KiB`, `240.3 KiB` (all ≤512 KiB).
+  - `dossier_matches`: **PASS** — byte-identical to `buildDossier('/output', {text_max_bytes: 65536})`, **`1,171,669 B`** (`1,144.2 KiB / 1,536 KiB`), `text = 61,160 / 65,536 B` (`0` truncated), `firstSource = 0-model.js`, `images = 3`.
+  - `determinism`: **PASS** — 2 fresh runs byte-identical (`diff -r`, `~1.8–1.9s`); `data.js` `594,247 B`; `vendor/makefun-board.ts` matches kit starter (`sha256 9ca51b6e5cd84fe4…`).
+  - `clean_clone`: **PASS** — verified from committed Slice 4 HEAD in `/tmp/radar-s4-clean-clone` (2 runs byte-identical and byte-equal to workspace build).
+  - `kit check` (no `--transcripts`): `4 passed, 1 failed, 15 skipped, 5 checked at submission` (fails only `transcripts_present`).
+  - `kit check` (with `--transcripts` temporary `/tmp` bundle of the 9 real Antigravity sessions from `akun1` + `akun2`): **`14 passed, 0 failed, 6 skipped, 5 checked at submission`** (`ok: every check run here passes; the rest are the site's at submission`).
+- Note: `README.md` still reflects pre-A+B+C summary numbers (left untouched per Slice 4 scope). NOT pushed and NOT submitted.
