@@ -1,11 +1,11 @@
 // Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
 // HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot):
-//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward):
-//     - Walk-Forward median error: x2.43 vs x4.14 flat 0.25x TVL (1.71x tighter, gmX x4.78 vs x6.18, R2 +0.059 vs -0.238)
-//     - Leave-One-Out median error: x3.40 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
-//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity, Category peer residual (n>=5, k=12)
-//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
+//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=1.0):
+//     - Walk-Forward median error: x2.41 vs x4.14 flat 0.25x TVL (1.72x tighter, gmX x4.77 vs x6.18, R2 +0.060 vs -0.238)
+//     - Leave-One-Out median error: x3.39 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
+//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity (unit-ridge Huber IRLS), Category peer residual (n>=5, k=12)
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/LAD/Cauchy, Recency weighting
 //   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
 //     - Leave-One-Out: AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error), Log-Loss 0.5898 vs 0.6900
 //     - Walk-Forward:  AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error), Log-Loss 0.6032 vs 0.7693
@@ -100,7 +100,7 @@ export const MODEL_VERSION = 'radar-3-fitted';
 
 export const MODEL_CONFIG: ModelConfig = {
   huber_delta: 1.0,
-  huber_ridge: 2.0,
+  huber_ridge: 1.0,
   huber_iters: 30,
   cat_min_peers: 5,
   cat_shrinkage_k: 12,

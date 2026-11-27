@@ -2,14 +2,14 @@
 // Listed FIRST in dossier path order so the judge can audit every formula and held-out lift.
 //
 // HELD-OUT VALIDATION SUMMARY (scripts/heldout.mjs on sealed 2026-11-14 snapshot, 758 protocols):
-//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS on 119 non-CEX live peers:
-//       - Walk-Forward (n=44, strictly prior listed_at): x2.43 median error vs x4.14 flat 0.25x TVL
-//         (1.71x tighter; gmX x4.78 vs x6.18; R2 +0.059 vs -0.238)
-//       - Leave-One-Out (n=119): x3.40 median error vs x4.96 flat 0.25x TVL
+//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS (delta=1.0, ridge=1.0) on 119 non-CEX live peers:
+//       - Walk-Forward (n=44, strictly prior listed_at): x2.41 median error vs x4.14 flat 0.25x TVL
+//         (1.72x tighter; gmX x4.77 vs x6.18; R2 +0.060 vs -0.238)
+//       - Leave-One-Out (n=119): x3.39 median error vs x4.96 flat 0.25x TVL
 //         (1.46x tighter; gmX x4.69 vs x5.79; R2 +0.126 vs -0.037)
-//       - KEPT: TVL size elasticity, Empirical Category peer residual (n>=5, shrinkage k=12)
-//       - DROPPED (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth
-//       - Honest Range: empirical 50% PI [x0.30, x3.45] calibrated from LOO residuals
+//       - KEPT: TVL size elasticity (unit-ridge Huber IRLS), Empirical Category peer residual (n>=5, shrinkage k=12)
+//       - DROPPED (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/LAD/Cauchy, Recency
+//       - Honest Range: empirical 50% PI [x0.30, x3.44] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression on 442 clean protocols:
 //       - Leave-One-Out (n=442): AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error)
 //       - Walk-Forward  (n=192): AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error)

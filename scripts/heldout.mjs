@@ -249,12 +249,12 @@ const valPlusGrowth = testValSpec({ tvl: true, cat: true, growth: true });
 const valPlusAge = testValSpec({ tvl: true, cat: true, age: true });
 const valPlusChains = testValSpec({ tvl: true, cat: true, chains: true });
 
-console.log('\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward)');
+console.log('\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=1.0)');
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
   ['Baseline: Flat 0.25x TVL', valBase, 'BASE'],
-  ['+ TVL size elasticity', valTvl, 'KEEP'],
+  ['+ TVL size elasticity (Huber r=1)', valTvl, 'KEEP'],
   ['+ Category residual (n>=5, k=12)', valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
@@ -306,7 +306,7 @@ const assertions = [
   ['Kept val LOO medX < base', valKept.loo.medX < valBase.loo.medX],
   ['Kept val improves over TVL-only on BOTH WF and LOO medX', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX],
   ['Kept val improves over TVL-only on BOTH WF and LOO R2', valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
-  ['Dropped val growth fails WF R2 & LOO R2', valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
+  ['Dropped val growth fails WF medX, WF R2 & LOO R2', valPlusGrowth.wf.medX > valKept.wf.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
   // Age stays DROPPED on the chronological walk-forward test (the forward-looking test); LOO medX alone does not save it.
   ['Dropped val age fails WF medX & WF R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.wf.r2 < valKept.wf.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
