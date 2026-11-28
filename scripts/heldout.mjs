@@ -12,6 +12,8 @@ import { fileURLToPath } from 'node:url';
 import {
   MODEL_CONFIG,
   ageDays,
+  breadthFeature,
+  chainAgeFeature,
   clamp,
   fitHuberIRLS,
   fitLogisticIRLS,
@@ -47,6 +49,10 @@ const histG180 = (slug) => {
   const v = history.get(slug)?.g180;
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 };
+const histChainG180 = (slug) => {
+  const v = history.get(slug)?.chain_g180;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+};
 const cfg = MODEL_CONFIG;
 const logFloor = Math.log(snapshot.floor_usd);
 const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
@@ -65,6 +71,8 @@ const valPeers = snapshot.protocols
     logTvl: Math.log(p.tvl_usd),
     g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
     g180: histG180(p.slug),
+    chainG180: histChainG180(p.slug),
+    chainsN: p.chains.length,
     age: ageDays(snapshot.as_of, p.listed_at),
     listed_at: p.listed_at,
     logChains: Math.log2(Math.max(1, p.chains.length)),
@@ -74,10 +82,14 @@ function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
   const hs = histStats(train.map((d) => d.g180));
+  const bs = histStats(train.map((d) => breadthFeature(d.g180, d.chainsN)));
+  const cas = histStats(train.map((d) => chainAgeFeature(d.chainG180, d.age)));
   const rVec = [0];
   if (spec.tvl) rVec.push(cfg.huber_ridge);
   if (spec.eraInter) rVec.push(cfg.era_inter_ridge);
   if (spec.g180) rVec.push(cfg.hist_growth_ridge);
+  if (spec.breadth) rVec.push(cfg.hist_breadth_ridge);
+  if (spec.chainAge) rVec.push(cfg.hist_chain_age_ridge);
   if (spec.growth) rVec.push(cfg.huber_ridge);
   if (spec.age) rVec.push(cfg.huber_ridge);
   if (spec.chains) rVec.push(cfg.huber_ridge);
@@ -87,21 +99,30 @@ function fitValSpec(train, spec) {
     if (spec.tvl) v.push(xTvl);
     if (spec.eraInter) v.push(isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
     if (spec.g180) v.push(stdHist(d.g180, hs));
+    if (spec.breadth) v.push(stdHist(breadthFeature(d.g180, d.chainsN), bs));
+    if (spec.chainAge) v.push(stdHist(chainAgeFeature(d.chainG180, d.age), cas));
     if (spec.growth) v.push(d.g7log);
     if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
     if (spec.chains) v.push(d.logChains);
     return v;
   };
+  let target = train.map((d) => d.logRatio);
+  if (spec.yWinsor) {
+    const yLo = quantile(target, cfg.val_y_winsor_lo);
+    const yHi = quantile(target, cfg.val_y_winsor_hi);
+    target = target.map((v) => clamp(v, yLo, yHi));
+  }
   const beta = spec.flat025
     ? [Math.log(0.25)]
-    : fitHuberIRLS(train.map(feat), train.map((d) => d.logRatio), cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters, rVec);
+    : fitHuberIRLS(train.map(feat), target, cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters, rVec);
   const base = (d) => feat(d).reduce((s, x, j) => s + x * beta[j], 0);
 
   const catAdj = new Map();
   if (spec.cat) {
     const byCat = new Map();
-    for (const d of train) {
-      const r = d.logRatio - base(d);
+    for (let ti = 0; ti < train.length; ti++) {
+      const d = train[ti];
+      const r = target[ti] - base(d);
       if (!byCat.has(d.cat)) byCat.set(d.cat, []);
       byCat.get(d.cat).push(r);
     }
@@ -275,12 +296,14 @@ const valBase = testValSpec({ flat025: true });
 const valTvl = testValSpec({ tvl: true });
 const valTvlCat = testValSpec({ tvl: true, cat: true });
 const valEra = testValSpec({ tvl: true, eraInter: true, cat: true });
-const valKept = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
-const valPlusGrowth = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, growth: true });
-const valPlusAge = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, age: true });
-const valPlusChains = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, chains: true });
+const valRev4 = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
+const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true };
+const valKept = testValSpec(valKeptSpec);
+const valPlusGrowth = testValSpec({ ...valKeptSpec, growth: true });
+const valPlusAge = testValSpec({ ...valKeptSpec, age: true });
+const valPlusChains = testValSpec({ ...valKeptSpec, chains: true });
 
-console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge}])`);
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}])`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
@@ -288,7 +311,8 @@ for (const [label, r, verdict] of [
   ['+ TVL size elasticity (Huber r=1)', valTvl, 'KEEP'],
   ['+ Category residual (n>=5, k=12)', valTvlCat, 'KEEP'],
   ['+ Era>=2023 x TVL slope (r=20)', valEra, 'KEEP'],
-  ['+ 180d TVL growth (log, r=50)', valKept, 'KEEP'],
+  ['+ 180d TVL growth g180 (r=50)', valRev4, 'KEEP'],
+  ['+ g180*sqrt(ch)+ch_g180*age+yW', valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],

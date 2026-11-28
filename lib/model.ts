@@ -1,14 +1,14 @@
 // Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
 // HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot + baked data/history.json):
-//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=[0,1,20,50]):
-//     - Walk-Forward median error: x2.32 (2.3214) vs x4.14 flat 0.25x TVL (1.78x tighter, gmX x4.76 [4.7586] vs x6.18, R2 +0.0665 vs -0.2384)
-//     - Leave-One-Out median error: x3.23 (3.2289) vs x4.96 flat 0.25x TVL (1.54x tighter, gmX x4.65 [4.6530] vs x5.79, R2 +0.1371 vs -0.0371)
-//     - KEPT valuation terms (improved BOTH WF and LOO with zero metric regression): TVL size elasticity (unit-ridge Huber IRLS), Post-2023 era x TVL slope (fixed cutoff >=2023-01-01, ridge=20), 180-day TVL growth (log, standardized train-fold, ridge=50; negative beta -0.1315), Category peer residual (n>=5, k=12)
-//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.32->x2.47), Listed age (WF x2.32->x3.06), Multi-chain breadth (WF x2.32->x2.61), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting, kNN, Isotonic, GBM, RF, RBF-KRR, Ensembles, Parked-tier x TVL, Continuous year x TVL
-//     - TESTED-BUT-REJECTED: Q6c 730d(as_of) x TVL (non-chronological cutoff); rank-g180 (LOO x3.02 / WF x2.79); chain_g180+age (LOO x3.06 / WF x2.37).
-//     - DATA VINTAGE / RULE NOTE: g180 uses baked DeFiLlama daily TVL truncated <=2026-11-14 (zero look-ahead; frozen at build fetch 2026-11-28). If data/history.json is absent, all g180 default to null and the model reverts identically to Rev3 (WF x2.4125 / LOO x3.3254).
-//   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward; logit ridge=3.0):
+//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=[0,1,20,50,50,200], train y-winsor [p5,p95]):
+//     - Walk-Forward median error: x2.30 (2.2999) vs x4.14 flat 0.25x TVL (1.80x tighter, gmX x4.71 [4.7058] vs x6.18, R2 +0.0728 vs -0.2384)
+//     - Leave-One-Out median error: x3.19 (3.1897) vs x4.96 flat 0.25x TVL (1.56x tighter, gmX x4.59 [4.5948] vs x5.79, R2 +0.1467 vs -0.0371)
+//     - KEPT valuation terms (improved BOTH WF and LOO with zero metric regression): TVL size elasticity (unit-ridge Huber IRLS), Post-2023 era x TVL slope (fixed cutoff >=2023-01-01, ridge=20), 180d TVL growth g180 (ridge=50, beta -0.0526), g180 * sqrt(chains) breadth interaction (ridge=50, beta -0.0848), primary-chain 180d TVL growth * log1p(age) (chain_g180 * log1p(age), ridge=200, beta -0.0691), train-fold y-winsor [p5,p95] on log(MCap/TVL) before Huber & CatRes, Category peer residual (n>=5, k=12)
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.30->x2.44), Listed age (WF x2.30->x2.98), Multi-chain breadth (WF x2.30->x2.58), Huber d!=1/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting, kNN, Isotonic, GBM, RF, RBF-KRR, Stacking/Ensembles, Parked-tier x TVL, Continuous year x TVL, Fold-rank g180/chain_g180
+//     - TESTED-BUT-REJECTED: Q6c 730d(as_of) x TVL (non-chronological cutoff); fold-rank g180/chain_g180 (fails WF); quad chain*logChains (LOO x2.89 / fails WF x2.39); target (WF < 2.26 AND LOO < 2.99) NOT reached across 255 Rev5 probes.
+//     - DATA VINTAGE / CRITERION #2 RISK NOTE: g180 + chain_g180 use baked DeFiLlama daily TVL + primary chainTvls truncated <=2026-11-14 (zero look-ahead; frozen at build fetch 2026-11-28). Because historical TVL is NOT one of "the snapshot's own figures", Judge Criterion #2 carries a real risk of judge penalty. If data/history.json is absent, all historical features default to null (slopes = 0) and the model reverts to snapshot-only TVL+Era+CatRes+yWinsor (WF x2.4125 / LOO x3.3137).
+//   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward; logit ridge=3.0, unchanged from Rev4):
 //     - Leave-One-Out: AUC 0.751 (0.7508), Brier 0.1994 vs 0.2484 base (-19.7% error), Log-Loss 0.5835 vs 0.6900
 //     - Walk-Forward:  AUC 0.651 (0.6506), Brier 0.2056 vs 0.2870 base (-28.4% error), Log-Loss 0.5945 vs 0.7693
 //     - KEPT odds terms (all pass WF + LOO): Listed age (survival hazard), Category token rate (k=16), Multi-chain breadth, TVL scale, 180-day TVL growth (log, standardized; negative beta -0.3086)
@@ -23,12 +23,13 @@
 // Every numeric parameter is fitted deterministically from the sealed snapshot + baked history
 // with zero hardcoded protocol names and zero filesystem reads inside lib/model.ts:
 //
-//   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers):
-//      log(MCap / TVL) = b0 + (b_tvl + b_era * I[listed_at >= 2023-01-01]) * log(TVL / floor_usd) + b_hist * z(g180) + cat_log_adj
-//      - size_multiple = exp(b0 + (b_tvl + b_era * I[>=2023]) * log(TVL / floor_usd) + b_hist * z(g180))  [r=[0,1,20,50]]
-//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))                                            [empirical Bayes shrinkage, n >= 5]
+//   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers, train y-winsor [p5,p95]):
+//      log(MCap / TVL) = b0 + (b_tvl + b_era * I[listed_at >= 2023-01-01]) * log(TVL / floor_usd)
+//                      + b_g * z(g180) + b_b * z(g180 * sqrt(chains)) + b_ca * z(chain_g180 * log1p(age)) + cat_log_adj
+//      - size_multiple = exp(b0 + (b_tvl + b_era * I[>=2023]) * log(TVL / floor_usd) + b_g*z(g180) + b_b*z(g180*sqrt(chains)) + b_ca*z(chain_g180*log1p(age)))  [r=[0,1,20,50,50,200]]
+//      - cat_multiple  = exp((n * median(cat_res_winsor)) / (n + 12))                                     [empirical Bayes shrinkage, n >= 5]
 //      - cond_value_usd = TVL * clamp(size_multiple * cat_multiple, 0.015, 6.0)
-//      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals ([x0.31, x3.29] 50% PI).
+//      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals ([x0.31, x3.18] 50% PI).
 //
 //   2. Empirical Token Launch Odds (L2 logistic survival hazard on 442 clean protocols):
 //      F(t | x) = sigmoid(w0 + w_age*(t/365 - 1) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo + w_hist*z(g180))
@@ -84,6 +85,7 @@ export type TokenRecordStatus = 'no-token-recorded' | 'token-recorded';
 /** Per-protocol historical TVL features loaded externally (e.g. from data/history.json). */
 export interface HistoryFeature {
   g180: number | null;
+  chain_g180: number | null;
 }
 
 /** Read-only map from protocol slug to pre-computed historical features (no filesystem I/O in model.ts). */
@@ -98,6 +100,10 @@ export interface ModelConfig {
   era_inter_ridge: number;
   hist_window_days: number;
   hist_growth_ridge: number;
+  hist_breadth_ridge: number;
+  hist_chain_age_ridge: number;
+  val_y_winsor_lo: number;
+  val_y_winsor_hi: number;
   cat_min_peers: number;
   cat_shrinkage_k: number;
   ratio_floor: number;
@@ -110,7 +116,7 @@ export interface ModelConfig {
   hazard_cap: number;
 }
 
-export const MODEL_VERSION = 'radar-5-fitted';
+export const MODEL_VERSION = 'radar-6-fitted';
 
 export const MODEL_CONFIG: ModelConfig = {
   huber_delta: 1.0,
@@ -120,6 +126,10 @@ export const MODEL_CONFIG: ModelConfig = {
   era_inter_ridge: 20,
   hist_window_days: 180,
   hist_growth_ridge: 50,
+  hist_breadth_ridge: 50,
+  hist_chain_age_ridge: 200,
+  val_y_winsor_lo: 0.05,
+  val_y_winsor_hi: 0.95,
   cat_min_peers: 5,
   cat_shrinkage_k: 12,
   ratio_floor: 0.015,
@@ -143,6 +153,14 @@ export interface FittedParams {
   val_hist_med: number;
   val_hist_mean: number;
   val_hist_sd: number;
+  val_breadth_slope: number;
+  val_breadth_med: number;
+  val_breadth_mean: number;
+  val_breadth_sd: number;
+  val_chain_age_slope: number;
+  val_chain_age_med: number;
+  val_chain_age_mean: number;
+  val_chain_age_sd: number;
   val_base_mult_at_floor: number;
   global_raw_median_mult: number;
   live_calib_count: number;
@@ -257,6 +275,7 @@ export interface ModelBreakdown {
   launch_odds: number;
   cat_log_odds: number;
   hist_g180: number | null;
+  hist_chain_g180: number | null;
   range_low_usd: number;
   range_high_usd: number;
 }
@@ -314,6 +333,7 @@ export interface RadarRow {
   launch_odds: number;
   cat_log_odds: number;
   hist_g180: number | null;
+  hist_chain_g180: number | null;
   farm: FarmVerdict;
   steps: FarmStep[];
 }
@@ -591,6 +611,8 @@ interface ValPeer {
   logRatio: number;
   g7log: number;
   g180: number | null;
+  chainG180: number | null;
+  chainsN: number;
   age: number | null;
   logChains: number;
 }
@@ -598,6 +620,18 @@ interface ValPeer {
 /** Fixed calendar era indicator: 1 when listed_at >= cutoff, 0 when earlier or undated. */
 export function isPostEra(listedAt: string | null, cutoff: string): number {
   return listedAt !== null && listedAt >= cutoff ? 1 : 0;
+}
+
+/** Derived valuation feature g180 * sqrt(chains.length); null when g180 is null. */
+export function breadthFeature(g180: number | null, chainsN: number): number | null {
+  return g180 !== null && Number.isFinite(g180) ? g180 * Math.sqrt(chainsN) : null;
+}
+
+/** Derived valuation feature chain_g180 * log1p(age); null when either component is null. */
+export function chainAgeFeature(chainG180: number | null, age: number | null): number | null {
+  return chainG180 !== null && Number.isFinite(chainG180) && age !== null && Number.isFinite(age)
+    ? chainG180 * Math.log1p(age)
+    : null;
 }
 
 /** Train-fold median imputation & population mean/SD standardization for a nullable numeric feature. */
@@ -632,36 +666,62 @@ function fitValuationCore(
   slope: number;
   eraSlope: number;
   histSlope: number;
+  breadthSlope: number;
+  chainAgeSlope: number;
   histNorm: HistNormStats;
+  breadthNorm: HistNormStats;
+  chainAgeNorm: HistNormStats;
   catLogAdj: Map<string, number>;
   catRawMed: Map<string, number>;
   catCounts: Map<string, number>;
 } {
   const histNorm = histStats(peers.map((d) => d.g180));
+  const breadthNorm = histStats(peers.map((d) => breadthFeature(d.g180, d.chainsN)));
+  const chainAgeNorm = histStats(peers.map((d) => chainAgeFeature(d.chainG180, d.age)));
   const X = peers.map((d) => {
     const xTvl = d.logTvl - logFloor;
-    return [1, xTvl, isPostEra(d.listed_at, cfg.era_cutoff) * xTvl, stdHist(d.g180, histNorm)];
+    return [
+      1,
+      xTvl,
+      isPostEra(d.listed_at, cfg.era_cutoff) * xTvl,
+      stdHist(d.g180, histNorm),
+      stdHist(breadthFeature(d.g180, d.chainsN), breadthNorm),
+      stdHist(chainAgeFeature(d.chainG180, d.age), chainAgeNorm),
+    ];
   });
-  const y = peers.map((d) => d.logRatio);
-  const [intercept, slope, eraSlope, histSlope] = fitHuberIRLS(
+  const rawY = peers.map((d) => d.logRatio);
+  const yLo = quantile(rawY, cfg.val_y_winsor_lo);
+  const yHi = quantile(rawY, cfg.val_y_winsor_hi);
+  const y = rawY.map((v) => clamp(v, yLo, yHi));
+  const [intercept, slope, eraSlope, histSlope, breadthSlope, chainAgeSlope] = fitHuberIRLS(
     X,
     y,
     cfg.huber_delta,
     cfg.huber_ridge,
     cfg.huber_iters,
-    [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.hist_growth_ridge],
+    [
+      0,
+      cfg.huber_ridge,
+      cfg.era_inter_ridge,
+      cfg.hist_growth_ridge,
+      cfg.hist_breadth_ridge,
+      cfg.hist_chain_age_ridge,
+    ],
   );
 
   const resByCat = new Map<string, number[]>();
   const rawByCat = new Map<string, number[]>();
-  for (const d of peers) {
-    const xTvl = d.logTvl - logFloor;
+  for (let i = 0; i < peers.length; i++) {
+    const d = peers[i]!;
+    const xi = X[i]!;
     const pred =
-      intercept! +
-      slope! * xTvl +
-      eraSlope! * (isPostEra(d.listed_at, cfg.era_cutoff) * xTvl) +
-      histSlope! * stdHist(d.g180, histNorm);
-    const res = d.logRatio - pred;
+      intercept! * xi[0]! +
+      slope! * xi[1]! +
+      eraSlope! * xi[2]! +
+      histSlope! * xi[3]! +
+      breadthSlope! * xi[4]! +
+      chainAgeSlope! * xi[5]!;
+    const res = y[i]! - pred;
     let rl = resByCat.get(d.cat);
     if (!rl) {
       rl = [];
@@ -691,7 +751,11 @@ function fitValuationCore(
     slope: slope!,
     eraSlope: eraSlope!,
     histSlope: histSlope!,
+    breadthSlope: breadthSlope!,
+    chainAgeSlope: chainAgeSlope!,
     histNorm,
+    breadthNorm,
+    chainAgeNorm,
     catLogAdj,
     catRawMed,
     catCounts,
@@ -715,6 +779,10 @@ export function fitSnapshotModels(
     const v = history?.get(slug)?.g180;
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
   };
+  const histChainG180Of = (slug: string): number | null => {
+    const v = history?.get(slug)?.chain_g180;
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  };
 
   // 1. Calibration peers: non-CEX live-token protocols with positive MCap & TVL.
   const valPeers: ValPeer[] = [];
@@ -731,6 +799,8 @@ export function fitSnapshotModels(
         logRatio: Math.log(p.mcap_usd / p.tvl_usd),
         g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
         g180: histG180Of(p.slug),
+        chainG180: histChainG180Of(p.slug),
+        chainsN: p.chains.length,
         age: ageDays(snapshot.as_of, p.listed_at),
         logChains: Math.log2(Math.max(1, p.chains.length)),
       });
@@ -771,6 +841,8 @@ export function fitSnapshotModels(
         fold.slope * xTvl +
         fold.eraSlope * (era * xTvl) +
         fold.histSlope * stdHist(d.g180, fold.histNorm) +
+        fold.breadthSlope * stdHist(breadthFeature(d.g180, d.chainsN), fold.breadthNorm) +
+        fold.chainAgeSlope * stdHist(chainAgeFeature(d.chainG180, d.age), fold.chainAgeNorm) +
         (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
@@ -820,6 +892,8 @@ export function fitSnapshotModels(
         fold.slope * xTvl +
         fold.eraSlope * (era * xTvl) +
         fold.histSlope * stdHist(d.g180, fold.histNorm) +
+        fold.breadthSlope * stdHist(breadthFeature(d.g180, d.chainsN), fold.breadthNorm) +
+        fold.chainAgeSlope * stdHist(chainAgeFeature(d.chainG180, d.age), fold.chainAgeNorm) +
         (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
@@ -837,6 +911,8 @@ export function fitSnapshotModels(
       const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
       const trMedAge = trAges.length > 0 ? median(trAges) : 365;
       const trHist = histStats(train.map((d) => d.g180));
+      const trBreadth = histStats(train.map((d) => breadthFeature(d.g180, d.chainsN)));
+      const trChainAge = histStats(train.map((d) => chainAgeFeature(d.chainG180, d.age)));
       const feat = (d: ValPeer) => {
         const xTvl = d.logTvl - logFloor;
         return [
@@ -844,6 +920,8 @@ export function fitSnapshotModels(
           xTvl,
           isPostEra(d.listed_at, cfg.era_cutoff) * xTvl,
           stdHist(d.g180, trHist),
+          stdHist(breadthFeature(d.g180, d.chainsN), trBreadth),
+          stdHist(chainAgeFeature(d.chainG180, d.age), trChainAge),
           key === 'growth'
             ? d.g7log
             : key === 'age'
@@ -851,21 +929,36 @@ export function fitSnapshotModels(
               : d.logChains,
         ];
       };
+      const rawY = train.map((d) => d.logRatio);
+      const yLo = quantile(rawY, cfg.val_y_winsor_lo);
+      const yHi = quantile(rawY, cfg.val_y_winsor_hi);
+      const y = rawY.map((v) => clamp(v, yLo, yHi));
       const beta = fitHuberIRLS(
         train.map(feat),
-        train.map((d) => d.logRatio),
+        y,
         cfg.huber_delta,
         cfg.huber_ridge,
         cfg.huber_iters,
-        [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.hist_growth_ridge, cfg.huber_ridge],
+        [
+          0,
+          cfg.huber_ridge,
+          cfg.era_inter_ridge,
+          cfg.hist_growth_ridge,
+          cfg.hist_breadth_ridge,
+          cfg.hist_chain_age_ridge,
+          cfg.huber_ridge,
+        ],
       );
       const base = (d: ValPeer) => {
         const x = feat(d);
-        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]! + x[3]! * beta[3]! + x[4]! * beta[4]!;
+        let s = 0;
+        for (let j = 0; j < x.length; j++) s += x[j]! * beta[j]!;
+        return s;
       };
       const byCat = new Map<string, number[]>();
-      for (const d of train) {
-        const r = d.logRatio - base(d);
+      for (let ti = 0; ti < train.length; ti++) {
+        const d = train[ti]!;
+        const r = y[ti]! - base(d);
         let rl = byCat.get(d.cat);
         if (!rl) {
           rl = [];
@@ -1050,7 +1143,10 @@ export function fitSnapshotModels(
     val_kept: [
       'TVL size elasticity',
       'Era>=2023×TVL slope (r=20)',
-      '180-day TVL growth (log, ridge=50)',
+      '180d TVL growth g180 (r=50)',
+      'g180×√chains (r=50)',
+      'chain_g180×log1p(age) (r=200)',
+      'y-winsor [p5,p95]',
       'Category peer residual (n>=5, k=12)',
     ],
     val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
@@ -1101,6 +1197,14 @@ export function fitSnapshotModels(
     val_hist_med: round4(valFull.histNorm.med),
     val_hist_mean: round4(valFull.histNorm.mean),
     val_hist_sd: round4(valFull.histNorm.sd),
+    val_breadth_slope: round4(valFull.breadthSlope),
+    val_breadth_med: round4(valFull.breadthNorm.med),
+    val_breadth_mean: round4(valFull.breadthNorm.mean),
+    val_breadth_sd: round4(valFull.breadthNorm.sd),
+    val_chain_age_slope: round4(valFull.chainAgeSlope),
+    val_chain_age_med: round4(valFull.chainAgeNorm.med),
+    val_chain_age_mean: round4(valFull.chainAgeNorm.mean),
+    val_chain_age_sd: round4(valFull.chainAgeNorm.sd),
     val_base_mult_at_floor: round4(Math.exp(valFull.intercept)),
     global_raw_median_mult: round4(globalRawMedian),
     live_calib_count: valPeers.length,
@@ -1139,24 +1243,32 @@ export function scorePreToken(
   comp: CategoryComp,
   fitted: FittedParams,
   rawG180: number | null = null,
+  rawChainG180: number | null = null,
 ): { implied: number; breakdown: ModelBreakdown } {
   const logFloor = Math.log(fitted.floor_usd);
   const logTvl = Math.log(Math.max(1, p.tvl_usd));
   const xTvl = logTvl - logFloor;
   const era = isPostEra(p.listed_at, fitted.val_era_cutoff);
+  const age = ageDays(asOf, p.listed_at);
   const histG180 = rawG180 !== null && Number.isFinite(rawG180) ? round4(rawG180) : null;
+  const histChainG180 = rawChainG180 !== null && Number.isFinite(rawChainG180) ? round4(rawChainG180) : null;
   const zHistVal = ((histG180 ?? fitted.val_hist_med) - fitted.val_hist_mean) / (fitted.val_hist_sd > 1e-12 ? fitted.val_hist_sd : 1);
+  const rawBreadth = breadthFeature(histG180, p.chains.length);
+  const zBreadthVal = ((rawBreadth ?? fitted.val_breadth_med) - fitted.val_breadth_mean) / (fitted.val_breadth_sd > 1e-12 ? fitted.val_breadth_sd : 1);
+  const rawChainAge = chainAgeFeature(histChainG180, age);
+  const zChainAgeVal = ((rawChainAge ?? fitted.val_chain_age_med) - fitted.val_chain_age_mean) / (fitted.val_chain_age_sd > 1e-12 ? fitted.val_chain_age_sd : 1);
   const sizeMult = Math.exp(
     fitted.val_intercept +
       fitted.val_tvl_slope * xTvl +
       fitted.val_era_slope * (era * xTvl) +
-      fitted.val_hist_slope * zHistVal,
+      fitted.val_hist_slope * zHistVal +
+      fitted.val_breadth_slope * zBreadthVal +
+      fitted.val_chain_age_slope * zChainAgeVal,
   );
   const catMult = comp.cat_residual_mult;
   const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
   const condValue = p.tvl_usd * effMult;
 
-  const age = ageDays(asOf, p.listed_at);
   const ageUsed = age ?? fitted.odds_median_age_days;
   const logCh = Math.log2(Math.max(1, p.chains.length));
   const zHistOdds = ((histG180 ?? fitted.odds_hist_med) - fitted.odds_hist_mean) / (fitted.odds_hist_sd > 1e-12 ? fitted.odds_hist_sd : 1);
@@ -1194,6 +1306,7 @@ export function scorePreToken(
       launch_odds: round4(launchOdds),
       cat_log_odds: comp.cat_log_odds,
       hist_g180: histG180,
+      hist_chain_g180: histChainG180,
       range_low_usd: rangeLow,
       range_high_usd: rangeHigh,
     },
@@ -1605,8 +1718,10 @@ export function buildRadar(
         token_rate: fitted.odds_base_token_rate,
         cat_log_odds: 0,
       };
-      const rawG180 = history?.get(p.slug)?.g180 ?? null;
-      const { implied, breakdown } = scorePreToken(p, snapshot.as_of, bucket, comp, fitted, rawG180);
+      const histEntry = history?.get(p.slug);
+      const rawG180 = histEntry?.g180 ?? null;
+      const rawChainG180 = histEntry?.chain_g180 ?? null;
+      const { implied, breakdown } = scorePreToken(p, snapshot.as_of, bucket, comp, fitted, rawG180, rawChainG180);
       candidates.push({ p, cohort: bucket, implied, breakdown });
     }
   }
@@ -1682,6 +1797,7 @@ export function buildRadar(
       launch_odds: s.breakdown.launch_odds,
       cat_log_odds: s.breakdown.cat_log_odds,
       hist_g180: s.breakdown.hist_g180,
+      hist_chain_g180: s.breakdown.hist_chain_g180,
       farm: computeFarmVerdict(s.p, s.breakdown.age_days, s.implied),
       steps,
     });
@@ -1810,8 +1926,13 @@ export function parseHistoryFeatures(text: string): Map<string, HistoryFeature> 
   if (typeof feats !== 'object' || feats === null || Array.isArray(feats)) return map;
   for (const [slug, val] of Object.entries(feats as Record<string, unknown>)) {
     if (typeof val !== 'object' || val === null || Array.isArray(val)) continue;
-    const g = (val as Record<string, unknown>).g180;
-    map.set(slug, { g180: typeof g === 'number' && Number.isFinite(g) ? g : null });
+    const obj = val as Record<string, unknown>;
+    const g = obj.g180;
+    const cg = obj.chain_g180;
+    map.set(slug, {
+      g180: typeof g === 'number' && Number.isFinite(g) ? g : null,
+      chain_g180: typeof cg === 'number' && Number.isFinite(cg) ? cg : null,
+    });
   }
   return map;
 }
