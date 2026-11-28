@@ -8,7 +8,8 @@
 //       - Leave-One-Out (n=119): x3.39 median error vs x4.96 flat 0.25x TVL
 //         (1.46x tighter; gmX x4.69 vs x5.79; R2 +0.126 vs -0.037)
 //       - KEPT: TVL size elasticity (unit-ridge Huber IRLS), Empirical Category peer residual (n>=5, shrinkage k=12)
-//       - DROPPED (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/LAD/Cauchy, Recency
+//       - DROPPED (failed held-out tests): 7d growth (WF x2.41->x2.46, LOO x3.38), Age-in-Val (WF x2.41->x3.04, LOO x3.30),
+//         Multi-chain (WF x2.41->x2.61, LOO x3.47), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, Quad TVL, Recency
 //       - Honest Range: empirical 50% PI [x0.30, x3.44] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression on 442 clean protocols:
 //       - Leave-One-Out (n=442): AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error)
@@ -16,8 +17,8 @@
 //       - KEPT: Listed age (survival hazard), Category token rate (k=16), TVL scale, Chains
 //       - DROPPED: 7d TVL growth (negative snapshot-week market-beta artifact)
 //   [3] Implied Launch EV = max(1, round(TVL * clamp(size_mult * cat_mult, 0.015, 6.0) * launch_odds))
-//   [4] Costed Farm Verdict: Strong +EV (net/hr>=$3 & dep>=2x be), Positive +EV (net/hr>$0),
-//       Scale Needed (be<=10x dep), Gas-Blocked (be>10x dep).
+//   [4] Costed Farm Verdict (Gas-Basis; idle_capital_net_usd = net_after_gas - 4.5% APR capital_drag):
+//       Strong +EV (net/hr>=$3 & dep>=2x be), Positive +EV (net/hr>$0), Scale Needed (be<=10x dep), Gas-Blocked (be>10x dep).
 (() => {
   'use strict';
   const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -93,10 +94,11 @@
     const yieldRate = FARM_BENCHMARK_SHARE * (impliedUsd / Math.max(1, row.tvl_usd));
     const grossEv = round2(deposit * yieldRate), netAfterGas = round2(grossEv - gasMid), netPerHour = round2(netAfterGas / activeHours);
     const breakevenDeposit = Math.ceil(gasMid / Math.max(1e-9, yieldRate)), capitalDrag = round2(deposit * FARM_RISK_FREE_APR * (hold / 365));
+    const idleCapitalNet = round2(netAfterGas - capitalDrag);
     const verdict = verdictFor(netPerHour, deposit, breakevenDeposit);
     const tierFor = (dep) => { const gr = round2(dep * yieldRate), nt = round2(gr - gasMid), nph = round2(nt / activeHours); return { deposit_usd: dep, gross_ev_usd: gr, net_after_gas_usd: nt, net_per_hour: nph, verdict: verdictFor(nph, dep, breakevenDeposit) }; };
     const tiers = [0.5, 1, 2.5].map((m) => tierFor(deposit * m));
-    return { primary_chain: g.p, deposit_usd: deposit, hold_days: hold, gas_low_usd: gasLow, gas_high_usd: gasHigh, gas_mid_usd: gasMid, active_hours: activeHours, gross_ev_usd: grossEv, net_after_gas_usd: netAfterGas, net_per_hour: netPerHour, breakeven_deposit_usd: breakevenDeposit, capital_drag_usd: capitalDrag, verdict, tiers };
+    return { primary_chain: g.p, deposit_usd: deposit, hold_days: hold, gas_low_usd: gasLow, gas_high_usd: gasHigh, gas_mid_usd: gasMid, active_hours: activeHours, gross_ev_usd: grossEv, net_after_gas_usd: netAfterGas, net_per_hour: netPerHour, breakeven_deposit_usd: breakevenDeposit, capital_drag_usd: capitalDrag, idle_capital_net_usd: idleCapitalNet, verdict, tiers };
   }
 
   function stepText(st) {

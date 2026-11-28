@@ -27,6 +27,7 @@
   const fPr = (p) => (p == null || !isFinite(p) ? 'n/a' : `${(p * 100).toFixed(1)}%`);
   const fAge = (d) => (d == null ? 'unlisted' : d >= 365 ? `${(d / 365).toFixed(1)}y` : `${Math.max(0, Math.round(d))}d`);
   const fHr = (n) => `${n > 0 ? '+' : n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}/hr`;
+  const fUsdS = (n) => `${n < 0 ? '-' : n > 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
   const fmtExp = () => `exp(${FIT.val_intercept} ${FIT.val_tvl_slope < 0 ? '-' : '+'} ${Math.abs(FIT.val_tvl_slope)}·ln(TVL/$50M))`;
 
   const dirty = () => Math.abs(S.sbTvl - FIT.val_tvl_slope) > 1e-4 || Math.abs(S.sbCat - 1) > 1e-4 || Math.abs(S.sbHor - FIT.horizon_days) > 1 || Math.abs(S.sbPar - FIT.parent_tokenless_prob) > 1e-4;
@@ -157,15 +158,22 @@
 
   function renderHero(all) {
     const top = all[0], strong = all.filter((r) => r.farm.verdict === 'Strong +EV').length, pos = all.filter((r) => r.farm.verdict === 'Positive +EV').length;
+    const dMap = {};
+    (HO.val_dropped_stats || []).forEach((x) => { dMap[x.key] = x; });
+    const wfBase = `x${HO.val_wf_med_x.toFixed(2)}`;
+    const rejText = dMap.growth && dMap.age
+      ? `7d growth (WF ${wfBase}→x${dMap.growth.wf_med_x.toFixed(2)}), Age-in-Val (WF ${wfBase}→x${dMap.age.wf_med_x.toFixed(2)})`
+      : HO.val_dropped.join(', ');
     return E('section', { class: 'hero' },
       E('div', null,
         E('h1', { text: 'Pre-Token Launch Valuation, Odds & Costed Farm Terminal' }),
         E('p', { class: 'hero-sub', text: `Product rule applied before ranking: ${INT.rankable_total} pre-token candidates ranked by fitted Huber TVL-elasticity + category residual valuation (${FIT.live_calib_count} non-CEX live peers) × L2 logistic 2y launch odds (${FIT.odds_clean_count} clean peers). Terms kept only when passing both blind held-out tests.` }),
         E('div', { class: 'ho-strip', 'aria-label': 'Held-out validation summary' },
-          E('span', { class: 'ho-pill' }, 'Walk-Forward: ', E('b', { text: `x${HO.val_wf_med_x.toFixed(2)}` }), ` vs x${HO.val_wf_flat_med_x.toFixed(2)} flat (${HO.val_wf_lift.toFixed(2)}× tighter, n=${HO.val_wf_n})`),
-          E('span', { class: 'ho-pill' }, 'Leave-One-Out: ', E('b', { text: `x${HO.val_loo_med_x.toFixed(2)}` }), ` vs x${HO.val_loo_flat_med_x.toFixed(2)} flat (${HO.val_loo_lift.toFixed(2)}× tighter, n=${HO.val_loo_n})`),
+          E('span', { class: 'ho-pill' }, 'Walk-Forward: ', E('b', { text: `x${HO.val_wf_med_x.toFixed(2)}` }), ` vs x${HO.val_wf_flat_med_x.toFixed(2)} flat (${HO.val_wf_lift.toFixed(2)}×, n=${HO.val_wf_n})`),
           E('span', { class: 'ho-pill cy' }, 'Odds AUC: ', E('b', { text: `${HO.odds_loo_auc.toFixed(3)} LOO` }), ` / ${HO.odds_wf_auc.toFixed(3)} WF`),
-          E('span', { class: 'ho-pill am' }, 'Dropped Val: ', E('b', { text: HO.val_dropped.join(', ') })),
+          E('span', { class: 'ho-pill' }, 'Leave-One-Out: ', E('b', { text: `x${HO.val_loo_med_x.toFixed(2)}` }), ` vs x${HO.val_loo_flat_med_x.toFixed(2)} flat (${HO.val_loo_lift.toFixed(2)}×, n=${HO.val_loo_n})`),
+          E('span', { class: 'ho-pill cy' }, 'Odds Features: ', E('b', { text: 'Listed age, Cat, TVL, Chains' })),
+          E('span', { class: 'ho-pill am' }, 'Rejected on Blind Test (Val): ', E('b', { text: rejText })),
         ),
       ),
       E('div', { class: 'kpi-grid' },
@@ -315,32 +323,43 @@
   }
 
   function renderMethodology() {
-    const comps = DATA.category_comps.filter((c) => c.source === 'category-shrunk').sort((a, b) => b.cat_residual_mult - a.cat_residual_mult);
-    const maxM = comps.length ? comps[0].cat_residual_mult : 1.5;
+    const comps = DATA.category_comps.filter((c) => c.source === 'category-shrunk');
+    const activeComps = comps.filter((c) => !c.board_excluded && c.clean_total > 0).sort((a, b) => b.cat_residual_mult - a.cat_residual_mult);
+    const exclComps = comps.filter((c) => c.board_excluded || c.clean_total === 0).sort((a, b) => b.cat_residual_mult - a.cat_residual_mult);
+    const maxM = comps.length ? Math.max(...comps.map((c) => c.cat_residual_mult)) : 1.5;
+    const dMap = {};
+    (HO.val_dropped_stats || []).forEach((x) => { dMap[x.key] = x; });
+    const gSt = dMap.growth, aSt = dMap.age, cSt = dMap.chains;
+    const compRow = (c, isExcl) => E('div', { class: `comp-row${isExcl ? ' comp-excl' : ''}`, title: isExcl ? `${c.category} (live comp only — excluded from board)` : c.category },
+      E('span', { class: 'comp-name' }, c.category, isExcl ? E('span', { class: 'excl-tag', text: 'excl' }) : null),
+      E('div', { class: 'comp-track' }, E('div', { class: 'comp-fill', style: `width:${Math.max(8, Math.round((c.cat_residual_mult / maxM) * 100))}%` })),
+      E('span', { class: 'comp-val', text: `${c.cat_residual_mult.toFixed(2)}x` }),
+      E('span', { class: 'comp-n', text: isExcl ? `n=${c.peer_count}·comp` : `n=${c.peer_count}·${Math.round(c.token_rate * 100)}%` }),
+    );
     return E('section', { class: 'method-grid', id: 'methodology' },
       E('article', { class: 'card' },
         E('h2', { text: `Fitted Valuation, Launch Odds & Held-Out Term Selection (${DATA.model_version})` }),
         E('div', { class: 'formula-box', text: `Implied EV = TVL × ${fmtExp()} × CatRes(n>=5,k=12) × LaunchOdds_2y\n50% PI = [×${FIT.pi50_low_mult.toFixed(2)}, ×${FIT.pi50_high_mult.toFixed(2)}] (${HO.val_loo_n} LOO residuals) · Parent prior = ${(FIT.parent_tokenless_prob * 100).toFixed(1)}% (1 - ${FIT.odds_base_token_rate.toFixed(3)})` }),
         E('table', { class: 'ho-table' },
-          E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Dropped Decision' }))),
+          E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Rejected Decision' }))),
           E('tbody', null,
             E('tr', null, E('td', { text: 'Flat 0.25x TVL (base)' }), E('td', { class: 'num', text: `x${HO.val_wf_flat_med_x.toFixed(2)} (R² -0.238)` }), E('td', { class: 'num', text: `x${HO.val_loo_flat_med_x.toFixed(2)} (R² -0.037)` }), E('td', { text: 'Baseline reference' })),
             E('tr', null, E('td', { text: 'Fitted Val (TVL + Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
-            E('tr', null, E('td', { text: 'Dropped Val terms' }), E('td', { class: 'num neg', text: 'Degraded WF' }), E('td', { class: 'num neg', text: 'Degraded LOO' }), E('td', { text: `DROPPED: ${HO.val_dropped.join(', ')}` })),
-            E('tr', null, E('td', { text: 'Token Odds (442 clean)' }), E('td', { class: 'num pos', text: `AUC ${HO.odds_wf_auc.toFixed(3)} · B ${HO.odds_wf_brier.toFixed(3)}` }), E('td', { class: 'num pos', text: `AUC ${HO.odds_loo_auc.toFixed(3)} · B ${HO.odds_loo_brier.toFixed(3)}` }), E('td', { text: 'KEPT: Age, Cat, TVL, Chains · DROPPED: 7d Growth' })),
+            E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens WF medX & WF/LOO R² (Odds neg. beta)' })),
+            E('tr', null, E('td', { text: '+ Age / Chains (Val)' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.wf_med_x.toFixed(2)} / x${cSt.wf_med_x.toFixed(2)}` : 'Degraded WF' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.loo_med_x.toFixed(2)} / x${cSt.loo_med_x.toFixed(2)}` : 'Degraded LOO' }), E('td', { text: 'REJECTED in Val (Listed age & Chains KEPT in Odds)' })),
+            E('tr', null, E('td', { text: 'Token Odds (442 clean)' }), E('td', { class: 'num pos', text: `AUC ${HO.odds_wf_auc.toFixed(3)} · B ${HO.odds_wf_brier.toFixed(3)}` }), E('td', { class: 'num pos', text: `AUC ${HO.odds_loo_auc.toFixed(3)} · B ${HO.odds_loo_brier.toFixed(3)}` }), E('td', { text: 'Odds Features: Listed age, Cat, TVL, Chains · DROPPED: 7d' })),
           ),
         ),
         E('p', { class: 'disclaimer', text: 'DefiLlama records are not proof that no token exists; this radar states whether a protocol records no token in the sealed snapshot. Farm verdicts evaluate an illustrative 5% TVL-pro-rata benchmark vs chain gas — never a promised airdrop or financial advice.' }),
       ),
       E('article', { class: 'card' },
         E('h2', { text: `Empirical Category Residuals & Token Rates (n >= ${DATA.config.cat_min_peers})` }),
-        E('p', { class: 'hero-sub', text: `Shrunk category residual multiples (k=${DATA.config.cat_shrinkage_k}) from ${FIT.live_calib_count} non-CEX live comps (raw median ${FIT.global_raw_median_mult.toFixed(3)}x) paired with empirical token incidence.` }),
-        E('div', { class: 'comp-bars' }, comps.map((c) => E('div', { class: 'comp-row' },
-          E('span', { class: 'comp-name', text: c.category, title: c.category }),
-          E('div', { class: 'comp-track' }, E('div', { class: 'comp-fill', style: `width:${Math.max(8, Math.round((c.cat_residual_mult / maxM) * 100))}%` })),
-          E('span', { class: 'comp-val', text: `${c.cat_residual_mult.toFixed(2)}x` }),
-          E('span', { class: 'comp-n', text: `n=${c.peer_count}·${Math.round(c.token_rate * 100)}%` }),
-        ))),
+        E('p', { class: 'hero-sub', text: `Shrunk category residual multiples (k=${DATA.config.cat_shrinkage_k}) from ${FIT.live_calib_count} non-CEX live comps (raw median ${FIT.global_raw_median_mult.toFixed(3)}x); active pre-token categories listed first.` }),
+        E('div', { class: 'comp-bars' },
+          activeComps.map((c) => compRow(c, false)),
+          exclComps.length ? E('div', { class: 'comp-div', text: 'Live comp only — excluded from board (product rule)' }) : null,
+          exclComps.map((c) => compRow(c, true)),
+        ),
       ),
     );
   }
@@ -387,14 +406,19 @@
         ),
       ),
       E('section', { class: 'drawer-sec' },
-        E('h3', null, E('span', { text: `Costed Farm Verdict (${f.primary_chain} · ${f.hold_days}d Hold)` }), vBadge(f.verdict)),
+        E('h3', null, E('span', { text: `Costed Farm Verdict — Gas Basis (${f.primary_chain} · ${f.hold_days}d Hold)` }), vBadge(f.verdict)),
         E('div', { class: 'verdict-box' },
           E('div', { class: 'vb-cell' }, E('span', { text: 'Net $/Hour' }), E('b', { class: f.net_per_hour > 0 ? 'pos' : f.net_per_hour < 0 ? 'neg' : 'flat', text: fHr(f.net_per_hour) })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Gas Break-Even' }), E('b', { text: fEx(f.breakeven_deposit_usd) })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Tier / Gas Range' }), E('b', { text: `$${f.deposit_usd.toLocaleString('en-US')} / $${f.gas_low_usd.toFixed(2)}–$${f.gas_high_usd.toFixed(2)}` })),
           E('div', { class: 'vb-cell' }, E('span', { text: 'Active / Gross EV' }), E('b', { text: `${f.active_hours.toFixed(2)}h / $${f.gross_ev_usd.toFixed(2)}` })),
         ),
-        E('p', { class: 'verdict-note', text: `From $${f.deposit_usd.toLocaleString('en-US')} deposit tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps under illustrative 5% TVL-pro-rata benchmark (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}). Not an airdrop promise.` }),
+        E('p', {
+          class: 'verdict-note',
+          text: f.net_per_hour > 0
+            ? `Gas-Basis +EV (assumes vault base APY >= 4.5% offsets $${f.capital_drag_usd.toFixed(2)} capital drag; idle-capital net: ${fUsdS(f.idle_capital_net_usd != null ? f.idle_capital_net_usd : f.net_after_gas_usd - f.capital_drag_usd)}). From $${f.deposit_usd.toLocaleString('en-US')} tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps, 5% TVL-pro-rata benchmark. Not an airdrop promise.`
+            : `Gas-Basis ${f.verdict} (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}; idle-capital net: ${fUsdS(f.idle_capital_net_usd != null ? f.idle_capital_net_usd : f.net_after_gas_usd - f.capital_drag_usd)}). From $${f.deposit_usd.toLocaleString('en-US')} tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps, 5% TVL-pro-rata benchmark.`,
+        }),
         E('div', { class: 'tier-table' },
           E('div', { class: 'tier-head' }, E('span', { text: 'Deposit tier' }), E('span', { class: 'num', text: 'Gross EV' }), E('span', { class: 'num', text: 'Net $/hr' }), E('span', { text: 'Verdict' })),
           (f.tiers || []).map((t) => E('div', { class: 'tier-row' }, E('span', { text: `$${t.deposit_usd.toLocaleString('en-US')}` }), E('span', { class: 'num', text: `$${t.gross_ev_usd.toFixed(2)}` }), E('span', { class: `num ${t.net_per_hour > 0 ? 'pos' : t.net_per_hour < 0 ? 'neg' : 'flat'}`, text: fHr(t.net_per_hour) }), vBadge(t.verdict))),

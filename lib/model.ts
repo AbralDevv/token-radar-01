@@ -5,7 +5,7 @@
 //     - Walk-Forward median error: x2.41 vs x4.14 flat 0.25x TVL (1.72x tighter, gmX x4.77 vs x6.18, R2 +0.060 vs -0.238)
 //     - Leave-One-Out median error: x3.39 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
 //     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity (unit-ridge Huber IRLS), Category peer residual (n>=5, k=12)
-//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth, Listed age, Multi-chain breadth, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/LAD/Cauchy, Recency weighting
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.41->x2.46), Listed age (WF x2.41->x3.04), Multi-chain breadth (WF x2.41->x2.61), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting
 //   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
 //     - Leave-One-Out: AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error), Log-Loss 0.5898 vs 0.6900
 //     - Walk-Forward:  AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error), Log-Loss 0.6032 vs 0.7693
@@ -149,6 +149,7 @@ export interface CategoryComp {
   raw_median_ratio: number | null;
   cat_residual_mult: number;
   source: 'category-shrunk' | 'global-fallback';
+  board_excluded: boolean;
   clean_total: number;
   clean_live: number;
   token_rate: number;
@@ -205,6 +206,7 @@ export interface FarmVerdict {
   net_per_hour: number;
   breakeven_deposit_usd: number;
   capital_drag_usd: number;
+  idle_capital_net_usd: number;
   verdict: VerdictLabel;
   /** Deposit tiers (0.5x / 1x / 2.5x base deposit): same gas, hold, benchmark — shows the capital scale at which the farm turns +EV. */
   tiers: FarmTier[];
@@ -301,6 +303,16 @@ export interface LivePeerRow {
   age_days: number | null;
 }
 
+/** Blind held-out ablation summary for one dropped valuation candidate term. */
+export interface DroppedTermStat {
+  key: 'growth' | 'age' | 'chains';
+  label: string;
+  wf_med_x: number;
+  loo_med_x: number;
+  wf_r2: number;
+  loo_r2: number;
+}
+
 /** Held-out validation summary computed deterministically on the snapshot peers. */
 export interface HeldoutSummary {
   val_loo_n: number;
@@ -315,6 +327,7 @@ export interface HeldoutSummary {
   val_wf_lift: number;
   val_wf_gm_x: number;
   val_wf_r2: number;
+  val_dropped_stats: DroppedTermStat[];
   odds_loo_n: number;
   odds_loo_auc: number;
   odds_loo_brier: number;
@@ -541,6 +554,9 @@ interface ValPeer {
   listed_at: string | null;
   logTvl: number;
   logRatio: number;
+  g7log: number;
+  age: number | null;
+  logChains: number;
 }
 
 function fitValuationCore(
@@ -610,6 +626,9 @@ export function fitSnapshotModels(
         listed_at: p.listed_at,
         logTvl: Math.log(p.tvl_usd),
         logRatio: Math.log(p.mcap_usd / p.tvl_usd),
+        g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
+        age: ageDays(snapshot.as_of, p.listed_at),
+        logChains: Math.log2(Math.max(1, p.chains.length)),
       });
       livePeers.push({
         slug: p.slug,
@@ -695,6 +714,70 @@ export function fitSnapshotModels(
   }
   const valWfStat = evalLogVal(wfPredY, wfActY);
   const valWfFlatMedX = Math.exp(median(wfFlatErr));
+
+  // Blind held-out ablation stats for the 3 dropped valuation terms (exact parity with scripts/heldout.mjs).
+  const evalDroppedValTerm = (key: 'growth' | 'age' | 'chains', label: string): DroppedTermStat => {
+    const fitExtra = (train: ValPeer[]) => {
+      const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
+      const trMedAge = trAges.length > 0 ? median(trAges) : 365;
+      const feat = (d: ValPeer) => [
+        1,
+        d.logTvl - logFloor,
+        key === 'growth'
+          ? d.g7log
+          : key === 'age'
+            ? Math.log1p(d.age ?? trMedAge) - Math.log1p(365)
+            : d.logChains,
+      ];
+      const beta = fitHuberIRLS(train.map(feat), train.map((d) => d.logRatio), cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters);
+      const base = (d: ValPeer) => {
+        const x = feat(d);
+        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]!;
+      };
+      const byCat = new Map<string, number[]>();
+      for (const d of train) {
+        const r = d.logRatio - base(d);
+        let rl = byCat.get(d.cat);
+        if (!rl) {
+          rl = [];
+          byCat.set(d.cat, rl);
+        }
+        rl.push(r);
+      }
+      const catAdj = new Map<string, number>();
+      for (const [cat, rs] of byCat) {
+        if (rs.length >= cfg.cat_min_peers) catAdj.set(cat, (rs.length * median(rs)) / (rs.length + cfg.cat_shrinkage_k));
+      }
+      return (d: ValPeer) =>
+        d.logTvl + clamp(base(d) + (catAdj.get(d.cat) ?? 0), Math.log(cfg.ratio_floor), Math.log(cfg.ratio_cap));
+    };
+    const dLooP: number[] = [];
+    for (let i = 0; i < valPeers.length; i++) {
+      dLooP.push(fitExtra(valPeers.filter((_, j) => j !== i))(valPeers[i]!));
+    }
+    const dWfP: number[] = [];
+    for (let i = wfValStart; i < datedVal.length; i++) {
+      const d = datedVal[i]!;
+      const train = datedVal.filter((t, j) => j < i && t.listed_at! < d.listed_at!);
+      if (train.length < 20) continue;
+      dWfP.push(fitExtra(train)(d));
+    }
+    const dLoo = evalLogVal(dLooP, looActY);
+    const dWf = evalLogVal(dWfP, wfActY);
+    return {
+      key,
+      label,
+      wf_med_x: round4(dWf.medX),
+      loo_med_x: round4(dLoo.medX),
+      wf_r2: round4(dWf.r2),
+      loo_r2: round4(dLoo.r2),
+    };
+  };
+  const valDroppedStats: DroppedTermStat[] = [
+    evalDroppedValTerm('growth', '7d TVL growth'),
+    evalDroppedValTerm('age', 'Age-in-Val'),
+    evalDroppedValTerm('chains', 'Multi-chain breadth'),
+  ];
 
   // 2. Token launch odds: L2 logistic fit across all clean non-excluded protocols (pre-token + live).
   const cleanObs = snapshot.protocols.filter(passesProductRule).map((p) => ({
@@ -822,6 +905,7 @@ export function fitSnapshotModels(
     val_wf_lift: round4(valWfStat.medX > 0 ? valWfFlatMedX / valWfStat.medX : 1),
     val_wf_gm_x: round4(valWfStat.gmX),
     val_wf_r2: round4(valWfStat.r2),
+    val_dropped_stats: valDroppedStats,
     odds_loo_n: oddsLooP.length,
     odds_loo_auc: round4(oddsLooStat.auc),
     odds_loo_brier: round4(oddsLooStat.brier),
@@ -853,6 +937,7 @@ export function fitSnapshotModels(
       raw_median_ratio: rawMed !== null ? round4(rawMed) : null,
       cat_residual_mult: adj !== undefined ? round4(Math.exp(adj)) : 1,
       source: adj !== undefined ? 'category-shrunk' : 'global-fallback',
+      board_excluded: EXCLUDED_LAUNCH_CATS.has(cat),
       clean_total: tot,
       clean_live: hits,
       token_rate: round4(shrunkTokRate),
@@ -1093,6 +1178,7 @@ export function computeFarmVerdict(
   const netPerHour = round2(netAfterGas / activeHours);
   const breakevenDeposit = Math.ceil(gasMid / Math.max(1e-9, yieldRate));
   const capitalDrag = round2(deposit * FARM_RISK_FREE_APR * (hold / 365));
+  const idleCapitalNet = round2(netAfterGas - capitalDrag);
 
   const verdict = verdictFor(netPerHour, deposit, breakevenDeposit);
   // Deposit tiers: same gas, hold, and benchmark; only capital changes, so net $/hr scales
@@ -1118,6 +1204,7 @@ export function computeFarmVerdict(
     net_per_hour: netPerHour,
     breakeven_deposit_usd: breakevenDeposit,
     capital_drag_usd: capitalDrag,
+    idle_capital_net_usd: idleCapitalNet,
     verdict,
     tiers,
   };
@@ -1344,6 +1431,7 @@ export function buildRadar(
         raw_median_ratio: null,
         cat_residual_mult: 1,
         source: 'global-fallback' as const,
+        board_excluded: EXCLUDED_LAUNCH_CATS.has(cat),
         clean_total: 0,
         clean_live: 0,
         token_rate: fitted.odds_base_token_rate,
