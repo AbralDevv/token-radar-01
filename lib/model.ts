@@ -1,17 +1,17 @@
 // Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
-// HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot):
-//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=1.0, era_inter_ridge=20):
-//     - Walk-Forward median error: x2.41 (2.4125) vs x4.14 flat 0.25x TVL (1.72x tighter, gmX x4.77 vs x6.18, R2 +0.060 vs -0.238)
-//     - Leave-One-Out median error: x3.33 (3.3254) vs x4.96 flat 0.25x TVL (1.49x tighter, gmX x4.67 vs x5.79, R2 +0.129 vs -0.037)
-//     - KEPT valuation terms (improved BOTH WF and LOO with zero metric regression): TVL size elasticity (unit-ridge Huber IRLS), Post-2023 era x TVL slope (fixed calendar cutoff >=2023-01-01, ridge=20), Category peer residual (n>=5, k=12)
-//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.41->x2.45), Listed age (WF x2.41->x2.99), Multi-chain breadth (WF x2.41->x2.58), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting, kNN, Isotonic, GBM, RF, RBF-KRR, Ensembles, Parked-tier x TVL, Continuous year x TVL
-//     - TESTED-BUT-REJECTED: Q6c 730d(as_of) x TVL (WF x2.4047 / LOO x3.3114) uses an as_of-relative cutoff (2024-11-14) and fails strictly chronological walk-forward framing (Q6e WF x2.46-x2.58).
-//     - WF x2.40 WALL DIAGNOSIS: WF ranks 22-23 (evaa-protocol -0.874 vs waterneuron +0.880) sit at near-identical xTvl (~-2.0) in 2024 with opposite signs ahead of a +0.27 log chasm, creating an irreducible geometric wall near x2.40 alongside within-category dispersion SD ~1.99 on 10 snapshot fields.
-//   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
-//     - Leave-One-Out: AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error), Log-Loss 0.5898 vs 0.6900
-//     - Walk-Forward:  AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error), Log-Loss 0.6032 vs 0.7693
-//     - KEPT odds terms (all 4 positive & pass WF + LOO): Listed age (survival hazard), Category token rate (k=16), Multi-chain breadth, TVL scale
+// HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot + baked data/history.json):
+//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=[0,1,20,50]):
+//     - Walk-Forward median error: x2.32 (2.3214) vs x4.14 flat 0.25x TVL (1.78x tighter, gmX x4.76 [4.7586] vs x6.18, R2 +0.0665 vs -0.2384)
+//     - Leave-One-Out median error: x3.23 (3.2289) vs x4.96 flat 0.25x TVL (1.54x tighter, gmX x4.65 [4.6530] vs x5.79, R2 +0.1371 vs -0.0371)
+//     - KEPT valuation terms (improved BOTH WF and LOO with zero metric regression): TVL size elasticity (unit-ridge Huber IRLS), Post-2023 era x TVL slope (fixed cutoff >=2023-01-01, ridge=20), 180-day TVL growth (log, standardized train-fold, ridge=50; negative beta -0.1315), Category peer residual (n>=5, k=12)
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.32->x2.47), Listed age (WF x2.32->x3.06), Multi-chain breadth (WF x2.32->x2.61), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting, kNN, Isotonic, GBM, RF, RBF-KRR, Ensembles, Parked-tier x TVL, Continuous year x TVL
+//     - TESTED-BUT-REJECTED: Q6c 730d(as_of) x TVL (non-chronological cutoff); rank-g180 (LOO x3.02 / WF x2.79); chain_g180+age (LOO x3.06 / WF x2.37).
+//     - DATA VINTAGE / RULE NOTE: g180 uses baked DeFiLlama daily TVL truncated <=2026-11-14 (zero look-ahead; frozen at build fetch 2026-11-28). If data/history.json is absent, all g180 default to null and the model reverts identically to Rev3 (WF x2.4125 / LOO x3.3254).
+//   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward; logit ridge=3.0):
+//     - Leave-One-Out: AUC 0.751 (0.7508), Brier 0.1994 vs 0.2484 base (-19.7% error), Log-Loss 0.5835 vs 0.6900
+//     - Walk-Forward:  AUC 0.651 (0.6506), Brier 0.2056 vs 0.2870 base (-28.4% error), Log-Loss 0.5945 vs 0.7693
+//     - KEPT odds terms (all pass WF + LOO): Listed age (survival hazard), Category token rate (k=16), Multi-chain breadth, TVL scale, 180-day TVL growth (log, standardized; negative beta -0.3086)
 //     - DROPPED odds term: 7d TVL growth (spurious negative snapshot-week drawdown beta artifact)
 //
 // Applies the snapshot's structural product rule BEFORE ranking so only genuine pre-token
@@ -20,18 +20,18 @@
 // calibration peers and all 144 excluded pre-token products (wrapped/staked/bridged/versioned
 // and CEX) are accounted for in the 758-protocol integrity strip.
 //
-// Every numeric parameter is fitted deterministically from the sealed snapshot with zero
-// hardcoded protocol names:
+// Every numeric parameter is fitted deterministically from the sealed snapshot + baked history
+// with zero hardcoded protocol names and zero filesystem reads inside lib/model.ts:
 //
 //   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers):
-//      log(MCap / TVL) = b0 + (b_tvl + b_era * I[listed_at >= 2023-01-01]) * log(TVL / floor_usd) + cat_log_adj
-//      - size_multiple = exp(b0 + (b_tvl + b_era * I[>=2023]) * log(TVL / floor_usd))  [sub-linear TVL curve; r_tvl=1, r_era=20]
-//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))                         [empirical Bayes shrinkage, n >= 5]
+//      log(MCap / TVL) = b0 + (b_tvl + b_era * I[listed_at >= 2023-01-01]) * log(TVL / floor_usd) + b_hist * z(g180) + cat_log_adj
+//      - size_multiple = exp(b0 + (b_tvl + b_era * I[>=2023]) * log(TVL / floor_usd) + b_hist * z(g180))  [r=[0,1,20,50]]
+//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))                                            [empirical Bayes shrinkage, n >= 5]
 //      - cond_value_usd = TVL * clamp(size_multiple * cat_multiple, 0.015, 6.0)
-//      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals.
+//      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals ([x0.31, x3.29] 50% PI).
 //
 //   2. Empirical Token Launch Odds (L2 logistic survival hazard on 442 clean protocols):
-//      F(t | x) = sigmoid(w0 + w_age*(t/365 - 1) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo)
+//      F(t | x) = sigmoid(w0 + w_age*(t/365 - 1) + w_tvl*ln(TVL/floor) + w_ch*log2(chains) + w_cat*cat_lo + w_hist*z(g180))
 //      - 2-year conditional launch hazard: hazard_2y = clamp((F(t + 730) - F(t)) / max(0.05, 1 - F(t)), 0.05, 0.85)
 //      - Above-floor non-watchlist rows (DefiLlama parentProtocol present) apply snapshot-derived
 //        parent_tokenless_prob = 1 - clean_live_token_rate (zero arbitrary constants).
@@ -81,6 +81,14 @@ export type UniverseBucket =
 /** Whether DefiLlama's snapshot records a token for the protocol. */
 export type TokenRecordStatus = 'no-token-recorded' | 'token-recorded';
 
+/** Per-protocol historical TVL features loaded externally (e.g. from data/history.json). */
+export interface HistoryFeature {
+  g180: number | null;
+}
+
+/** Read-only map from protocol slug to pre-computed historical features (no filesystem I/O in model.ts). */
+export type HistoryMap = ReadonlyMap<string, HistoryFeature>;
+
 /** Hyperparameters controlling deterministic fitting (never hardcoded protocol values). */
 export interface ModelConfig {
   huber_delta: number;
@@ -88,6 +96,8 @@ export interface ModelConfig {
   huber_iters: number;
   era_cutoff: string;
   era_inter_ridge: number;
+  hist_window_days: number;
+  hist_growth_ridge: number;
   cat_min_peers: number;
   cat_shrinkage_k: number;
   ratio_floor: number;
@@ -100,7 +110,7 @@ export interface ModelConfig {
   hazard_cap: number;
 }
 
-export const MODEL_VERSION = 'radar-4-fitted';
+export const MODEL_VERSION = 'radar-5-fitted';
 
 export const MODEL_CONFIG: ModelConfig = {
   huber_delta: 1.0,
@@ -108,6 +118,8 @@ export const MODEL_CONFIG: ModelConfig = {
   huber_iters: 30,
   era_cutoff: '2023-01-01',
   era_inter_ridge: 20,
+  hist_window_days: 180,
+  hist_growth_ridge: 50,
   cat_min_peers: 5,
   cat_shrinkage_k: 12,
   ratio_floor: 0.015,
@@ -120,13 +132,17 @@ export const MODEL_CONFIG: ModelConfig = {
   hazard_cap: 0.85,
 };
 
-/** Fitted valuation and launch-odds parameters derived strictly from the snapshot. */
+/** Fitted valuation and launch-odds parameters derived deterministically from snapshot + baked history. */
 export interface FittedParams {
   floor_usd: number;
   val_intercept: number;
   val_tvl_slope: number;
   val_era_slope: number;
   val_era_cutoff: string;
+  val_hist_slope: number;
+  val_hist_med: number;
+  val_hist_mean: number;
+  val_hist_sd: number;
   val_base_mult_at_floor: number;
   global_raw_median_mult: number;
   live_calib_count: number;
@@ -142,6 +158,10 @@ export interface FittedParams {
   odds_tvl_slope: number;
   odds_chain_slope: number;
   odds_cat_slope: number;
+  odds_hist_slope: number;
+  odds_hist_med: number;
+  odds_hist_mean: number;
+  odds_hist_sd: number;
   parent_tokenless_prob: number;
   horizon_days: number;
   hazard_floor: number;
@@ -236,6 +256,7 @@ export interface ModelBreakdown {
   parent_factor: number;
   launch_odds: number;
   cat_log_odds: number;
+  hist_g180: number | null;
   range_low_usd: number;
   range_high_usd: number;
 }
@@ -292,6 +313,7 @@ export interface RadarRow {
   parent_factor: number;
   launch_odds: number;
   cat_log_odds: number;
+  hist_g180: number | null;
   farm: FarmVerdict;
   steps: FarmStep[];
 }
@@ -568,6 +590,7 @@ interface ValPeer {
   logTvl: number;
   logRatio: number;
   g7log: number;
+  g180: number | null;
   age: number | null;
   logChains: number;
 }
@@ -575,6 +598,29 @@ interface ValPeer {
 /** Fixed calendar era indicator: 1 when listed_at >= cutoff, 0 when earlier or undated. */
 export function isPostEra(listedAt: string | null, cutoff: string): number {
   return listedAt !== null && listedAt >= cutoff ? 1 : 0;
+}
+
+/** Train-fold median imputation & population mean/SD standardization for a nullable numeric feature. */
+export interface HistNormStats {
+  med: number;
+  mean: number;
+  sd: number;
+}
+
+export function histStats(values: Array<number | null>): HistNormStats {
+  const nonnull = values.filter((v): v is number => v !== null && Number.isFinite(v));
+  const med = nonnull.length > 0 ? median(nonnull) : 0;
+  if (values.length === 0) return { med, mean: 0, sd: 1 };
+  const imputed = values.map((v) => (v !== null && Number.isFinite(v) ? v : med));
+  const mu = imputed.reduce((s, v) => s + v, 0) / imputed.length;
+  const variance = imputed.reduce((s, v) => s + (v - mu) ** 2, 0) / imputed.length;
+  const sd = variance > 1e-24 ? Math.sqrt(variance) : 1;
+  return { med, mean: mu, sd };
+}
+
+export function stdHist(v: number | null, st: HistNormStats): number {
+  const x = v !== null && Number.isFinite(v) ? v : st.med;
+  return (x - st.mean) / (st.sd > 1e-12 ? st.sd : 1);
 }
 
 function fitValuationCore(
@@ -585,29 +631,36 @@ function fitValuationCore(
   intercept: number;
   slope: number;
   eraSlope: number;
+  histSlope: number;
+  histNorm: HistNormStats;
   catLogAdj: Map<string, number>;
   catRawMed: Map<string, number>;
   catCounts: Map<string, number>;
 } {
+  const histNorm = histStats(peers.map((d) => d.g180));
   const X = peers.map((d) => {
     const xTvl = d.logTvl - logFloor;
-    return [1, xTvl, isPostEra(d.listed_at, cfg.era_cutoff) * xTvl];
+    return [1, xTvl, isPostEra(d.listed_at, cfg.era_cutoff) * xTvl, stdHist(d.g180, histNorm)];
   });
   const y = peers.map((d) => d.logRatio);
-  const [intercept, slope, eraSlope] = fitHuberIRLS(
+  const [intercept, slope, eraSlope, histSlope] = fitHuberIRLS(
     X,
     y,
     cfg.huber_delta,
     cfg.huber_ridge,
     cfg.huber_iters,
-    [0, cfg.huber_ridge, cfg.era_inter_ridge],
+    [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.hist_growth_ridge],
   );
 
   const resByCat = new Map<string, number[]>();
   const rawByCat = new Map<string, number[]>();
   for (const d of peers) {
     const xTvl = d.logTvl - logFloor;
-    const pred = intercept! + slope! * xTvl + eraSlope! * (isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
+    const pred =
+      intercept! +
+      slope! * xTvl +
+      eraSlope! * (isPostEra(d.listed_at, cfg.era_cutoff) * xTvl) +
+      histSlope! * stdHist(d.g180, histNorm);
     const res = d.logRatio - pred;
     let rl = resByCat.get(d.cat);
     if (!rl) {
@@ -633,13 +686,23 @@ function fitValuationCore(
       catLogAdj.set(cat, (res.length * median(res)) / (res.length + cfg.cat_shrinkage_k));
     }
   }
-  return { intercept: intercept!, slope: slope!, eraSlope: eraSlope!, catLogAdj, catRawMed, catCounts };
+  return {
+    intercept: intercept!,
+    slope: slope!,
+    eraSlope: eraSlope!,
+    histSlope: histSlope!,
+    histNorm,
+    catLogAdj,
+    catRawMed,
+    catCounts,
+  };
 }
 
-/** Fit both conditional valuation and empirical token-launch odds strictly from the snapshot. */
+/** Fit both conditional valuation and empirical token-launch odds from the snapshot (+ optional historical TVL map). */
 export function fitSnapshotModels(
   snapshot: Snapshot,
   cfg: ModelConfig = MODEL_CONFIG,
+  history?: HistoryMap,
 ): {
   fitted: FittedParams;
   heldout: HeldoutSummary;
@@ -648,6 +711,10 @@ export function fitSnapshotModels(
   livePeers: LivePeerRow[];
 } {
   const logFloor = Math.log(snapshot.floor_usd);
+  const histG180Of = (slug: string): number | null => {
+    const v = history?.get(slug)?.g180;
+    return typeof v === 'number' && Number.isFinite(v) ? v : null;
+  };
 
   // 1. Calibration peers: non-CEX live-token protocols with positive MCap & TVL.
   const valPeers: ValPeer[] = [];
@@ -663,6 +730,7 @@ export function fitSnapshotModels(
         logTvl: Math.log(p.tvl_usd),
         logRatio: Math.log(p.mcap_usd / p.tvl_usd),
         g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
+        g180: histG180Of(p.slug),
         age: ageDays(snapshot.as_of, p.listed_at),
         logChains: Math.log2(Math.max(1, p.chains.length)),
       });
@@ -699,7 +767,11 @@ export function fitSnapshotModels(
     const xTvl = d.logTvl - logFloor;
     const era = isPostEra(d.listed_at, cfg.era_cutoff);
     const logMult = clamp(
-      fold.intercept + fold.slope * xTvl + fold.eraSlope * (era * xTvl) + (fold.catLogAdj.get(d.cat) ?? 0),
+      fold.intercept +
+        fold.slope * xTvl +
+        fold.eraSlope * (era * xTvl) +
+        fold.histSlope * stdHist(d.g180, fold.histNorm) +
+        (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
     );
@@ -744,7 +816,11 @@ export function fitSnapshotModels(
     const xTvl = d.logTvl - logFloor;
     const era = isPostEra(d.listed_at, cfg.era_cutoff);
     const logMult = clamp(
-      fold.intercept + fold.slope * xTvl + fold.eraSlope * (era * xTvl) + (fold.catLogAdj.get(d.cat) ?? 0),
+      fold.intercept +
+        fold.slope * xTvl +
+        fold.eraSlope * (era * xTvl) +
+        fold.histSlope * stdHist(d.g180, fold.histNorm) +
+        (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
     );
@@ -760,12 +836,14 @@ export function fitSnapshotModels(
     const fitExtra = (train: ValPeer[]) => {
       const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
       const trMedAge = trAges.length > 0 ? median(trAges) : 365;
+      const trHist = histStats(train.map((d) => d.g180));
       const feat = (d: ValPeer) => {
         const xTvl = d.logTvl - logFloor;
         return [
           1,
           xTvl,
           isPostEra(d.listed_at, cfg.era_cutoff) * xTvl,
+          stdHist(d.g180, trHist),
           key === 'growth'
             ? d.g7log
             : key === 'age'
@@ -779,11 +857,11 @@ export function fitSnapshotModels(
         cfg.huber_delta,
         cfg.huber_ridge,
         cfg.huber_iters,
-        [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.huber_ridge],
+        [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.hist_growth_ridge, cfg.huber_ridge],
       );
       const base = (d: ValPeer) => {
         const x = feat(d);
-        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]! + x[3]! * beta[3]!;
+        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]! + x[3]! * beta[3]! + x[4]! * beta[4]!;
       };
       const byCat = new Map<string, number[]>();
       for (const d of train) {
@@ -839,6 +917,7 @@ export function fitSnapshotModels(
     age: ageDays(snapshot.as_of, p.listed_at),
     listed_at: p.listed_at,
     logChains: Math.log2(Math.max(1, p.chains.length)),
+    g180: histG180Of(p.slug),
   }));
   const cleanTotal = cleanObs.length;
   const cleanLiveCount = cleanObs.reduce((s, d) => s + d.hasTok, 0);
@@ -851,6 +930,7 @@ export function fitSnapshotModels(
     const trBase = train.length > 0 ? train.reduce((s, d) => s + d.hasTok, 0) / train.length : 0.5;
     const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
     const trMedAge = trAges.length > 0 ? median(trAges) : 365;
+    const trHist = histStats(train.map((d) => d.g180));
     const byCat = new Map<string, [number, number]>();
     for (const d of train) {
       let pair = byCat.get(d.cat);
@@ -873,11 +953,13 @@ export function fitSnapshotModels(
       d.logTvl - logFloor,
       d.logChains,
       catLO.get(d.cat) ?? 0,
+      stdHist(d.g180, trHist),
     ];
     const beta = fitLogisticIRLS(train.map(feat), train.map((d) => d.hasTok), cfg.logit_ridge, cfg.logit_iters);
     return {
       beta,
       trBase,
+      trHist,
       byCat,
       catLO,
       predict: (d: (typeof cleanObs)[number]) => {
@@ -890,7 +972,7 @@ export function fitSnapshotModels(
   };
 
   const fullOdds = fitOddsFold(cleanObs);
-  const [w0, wAge, wTvl, wCh, wCat] = fullOdds.beta;
+  const [w0, wAge, wTvl, wCh, wCat, wHist] = fullOdds.beta;
   const byCatTok = fullOdds.byCat;
   const catLogOddsMap = fullOdds.catLO;
 
@@ -965,9 +1047,20 @@ export function fitSnapshotModels(
     odds_wf_auc: round4(oddsWfStat.auc),
     odds_wf_brier: round4(oddsWfStat.brier),
     odds_wf_base_brier: round4(oddsWfBaseStat.brier),
-    val_kept: ['TVL size elasticity', 'Era>=2023×TVL slope (r=20)', 'Category peer residual (n>=5, k=12)'],
+    val_kept: [
+      'TVL size elasticity',
+      'Era>=2023×TVL slope (r=20)',
+      '180-day TVL growth (log, ridge=50)',
+      'Category peer residual (n>=5, k=12)',
+    ],
     val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
-    odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=16)', 'TVL scale', 'Multi-chain breadth'],
+    odds_kept: [
+      'Listed age (survival hazard)',
+      'Category token rate (k=16)',
+      'TVL scale',
+      'Multi-chain breadth',
+      '180-day TVL growth (log)',
+    ],
     odds_dropped: ['7d TVL growth (neg. beta)'],
   };
 
@@ -1004,6 +1097,10 @@ export function fitSnapshotModels(
     val_tvl_slope: round4(valFull.slope),
     val_era_slope: round4(valFull.eraSlope),
     val_era_cutoff: cfg.era_cutoff,
+    val_hist_slope: round4(valFull.histSlope),
+    val_hist_med: round4(valFull.histNorm.med),
+    val_hist_mean: round4(valFull.histNorm.mean),
+    val_hist_sd: round4(valFull.histNorm.sd),
     val_base_mult_at_floor: round4(Math.exp(valFull.intercept)),
     global_raw_median_mult: round4(globalRawMedian),
     live_calib_count: valPeers.length,
@@ -1019,6 +1116,10 @@ export function fitSnapshotModels(
     odds_tvl_slope: round4(wTvl!),
     odds_chain_slope: round4(wCh!),
     odds_cat_slope: round4(wCat!),
+    odds_hist_slope: round4(wHist!),
+    odds_hist_med: round4(fullOdds.trHist.med),
+    odds_hist_mean: round4(fullOdds.trHist.mean),
+    odds_hist_sd: round4(fullOdds.trHist.sd),
     parent_tokenless_prob: parentTokenlessProb,
     horizon_days: cfg.horizon_days,
     hazard_floor: cfg.hazard_floor,
@@ -1037,13 +1138,19 @@ export function scorePreToken(
   cohort: RankableCohort,
   comp: CategoryComp,
   fitted: FittedParams,
+  rawG180: number | null = null,
 ): { implied: number; breakdown: ModelBreakdown } {
   const logFloor = Math.log(fitted.floor_usd);
   const logTvl = Math.log(Math.max(1, p.tvl_usd));
   const xTvl = logTvl - logFloor;
   const era = isPostEra(p.listed_at, fitted.val_era_cutoff);
+  const histG180 = rawG180 !== null && Number.isFinite(rawG180) ? round4(rawG180) : null;
+  const zHistVal = ((histG180 ?? fitted.val_hist_med) - fitted.val_hist_mean) / (fitted.val_hist_sd > 1e-12 ? fitted.val_hist_sd : 1);
   const sizeMult = Math.exp(
-    fitted.val_intercept + fitted.val_tvl_slope * xTvl + fitted.val_era_slope * (era * xTvl),
+    fitted.val_intercept +
+      fitted.val_tvl_slope * xTvl +
+      fitted.val_era_slope * (era * xTvl) +
+      fitted.val_hist_slope * zHistVal,
   );
   const catMult = comp.cat_residual_mult;
   const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
@@ -1052,11 +1159,13 @@ export function scorePreToken(
   const age = ageDays(asOf, p.listed_at);
   const ageUsed = age ?? fitted.odds_median_age_days;
   const logCh = Math.log2(Math.max(1, p.chains.length));
+  const zHistOdds = ((histG180 ?? fitted.odds_hist_med) - fitted.odds_hist_mean) / (fitted.odds_hist_sd > 1e-12 ? fitted.odds_hist_sd : 1);
   const baseZ =
     fitted.odds_intercept +
     fitted.odds_tvl_slope * (logTvl - logFloor) +
     fitted.odds_chain_slope * logCh +
-    fitted.odds_cat_slope * comp.cat_log_odds;
+    fitted.odds_cat_slope * comp.cat_log_odds +
+    fitted.odds_hist_slope * zHistOdds;
   const pNow = sigmoid(baseZ + fitted.odds_age_slope * (ageUsed / 365 - 1));
   const pHorizon = sigmoid(baseZ + fitted.odds_age_slope * ((ageUsed + fitted.horizon_days) / 365 - 1));
   const rawHazard = clamp((pHorizon - pNow) / Math.max(0.05, 1 - pNow), fitted.hazard_floor, fitted.hazard_cap);
@@ -1084,6 +1193,7 @@ export function scorePreToken(
       parent_factor: round4(parentFactor),
       launch_odds: round4(launchOdds),
       cat_log_odds: comp.cat_log_odds,
+      hist_g180: histG180,
       range_low_usd: rangeLow,
       range_high_usd: rangeHigh,
     },
@@ -1439,9 +1549,10 @@ export function farmSteps(p: SnapshotProtocol, age: number | null, cohort: Ranka
 export function buildRadar(
   snapshot: Snapshot,
   cfg: ModelConfig = MODEL_CONFIG,
+  history?: HistoryMap,
 ): { board: BoardRow[]; radar: RadarData } {
   const watchlistSet = new Set(snapshot.watchlist);
-  const { fitted, heldout, comps, compByCategory, livePeers } = fitSnapshotModels(snapshot, cfg);
+  const { fitted, heldout, comps, compByCategory, livePeers } = fitSnapshotModels(snapshot, cfg, history);
 
   const counts: IntegrityAccounting = {
     snapshot_total: snapshot.protocols.length,
@@ -1494,7 +1605,8 @@ export function buildRadar(
         token_rate: fitted.odds_base_token_rate,
         cat_log_odds: 0,
       };
-      const { implied, breakdown } = scorePreToken(p, snapshot.as_of, bucket, comp, fitted);
+      const rawG180 = history?.get(p.slug)?.g180 ?? null;
+      const { implied, breakdown } = scorePreToken(p, snapshot.as_of, bucket, comp, fitted, rawG180);
       candidates.push({ p, cohort: bucket, implied, breakdown });
     }
   }
@@ -1569,6 +1681,7 @@ export function buildRadar(
       parent_factor: s.breakdown.parent_factor,
       launch_odds: s.breakdown.launch_odds,
       cat_log_odds: s.breakdown.cat_log_odds,
+      hist_g180: s.breakdown.hist_g180,
       farm: computeFarmVerdict(s.p, s.breakdown.age_days, s.implied),
       steps,
     });
@@ -1681,6 +1794,26 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     return `all ${byRank.length} rows share the same implied value`;
   }
   return null;
+}
+
+/** Parse data/history.json text into a pure HistoryMap without touching the filesystem. */
+export function parseHistoryFeatures(text: string): Map<string, HistoryFeature> {
+  const map = new Map<string, HistoryFeature>();
+  let raw: unknown;
+  try {
+    raw = JSON.parse(text);
+  } catch {
+    return map;
+  }
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return map;
+  const feats = (raw as Record<string, unknown>).features;
+  if (typeof feats !== 'object' || feats === null || Array.isArray(feats)) return map;
+  for (const [slug, val] of Object.entries(feats as Record<string, unknown>)) {
+    if (typeof val !== 'object' || val === null || Array.isArray(val)) continue;
+    const g = (val as Record<string, unknown>).g180;
+    map.set(slug, { g180: typeof g === 'number' && Number.isFinite(g) ? g : null });
+  }
+  return map;
 }
 
 /** Serialize window.RADAR into a compact offline script with zero network calls. */

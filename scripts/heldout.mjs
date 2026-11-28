@@ -6,21 +6,28 @@
 // Usage:
 //   node scripts/heldout.mjs --input ../token-radar-01-kit/token-radar-01-kit/input/snapshot.json
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   MODEL_CONFIG,
   ageDays,
   clamp,
   fitHuberIRLS,
   fitLogisticIRLS,
+  histStats,
   isPostEra,
   median,
+  parseHistoryFeatures,
   parseSnapshot,
   passesProductRule,
   quantile,
   recordsNoToken,
   sigmoid,
+  stdHist,
 } from '../lib/model.ts';
+
+const here = fileURLToPath(new URL('.', import.meta.url));
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -33,7 +40,13 @@ const inputPath = arg(
   'input',
   '/home/hatch/bounties/token-radar-01-kit/token-radar-01-kit/input/snapshot.json',
 );
+const historyPath = arg('history', join(here, '..', 'data', 'history.json'));
 const snapshot = parseSnapshot(readFileSync(inputPath, 'utf8'));
+const history = existsSync(historyPath) ? parseHistoryFeatures(readFileSync(historyPath, 'utf8')) : new Map();
+const histG180 = (slug) => {
+  const v = history.get(slug)?.g180;
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+};
 const cfg = MODEL_CONFIG;
 const logFloor = Math.log(snapshot.floor_usd);
 const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
@@ -51,6 +64,7 @@ const valPeers = snapshot.protocols
     logRatio: Math.log(p.mcap_usd / p.tvl_usd),
     logTvl: Math.log(p.tvl_usd),
     g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
+    g180: histG180(p.slug),
     age: ageDays(snapshot.as_of, p.listed_at),
     listed_at: p.listed_at,
     logChains: Math.log2(Math.max(1, p.chains.length)),
@@ -59,9 +73,11 @@ const valPeers = snapshot.protocols
 function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
+  const hs = histStats(train.map((d) => d.g180));
   const rVec = [0];
   if (spec.tvl) rVec.push(cfg.huber_ridge);
   if (spec.eraInter) rVec.push(cfg.era_inter_ridge);
+  if (spec.g180) rVec.push(cfg.hist_growth_ridge);
   if (spec.growth) rVec.push(cfg.huber_ridge);
   if (spec.age) rVec.push(cfg.huber_ridge);
   if (spec.chains) rVec.push(cfg.huber_ridge);
@@ -70,6 +86,7 @@ function fitValSpec(train, spec) {
     const v = [1];
     if (spec.tvl) v.push(xTvl);
     if (spec.eraInter) v.push(isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
+    if (spec.g180) v.push(stdHist(d.g180, hs));
     if (spec.growth) v.push(d.g7log);
     if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
     if (spec.chains) v.push(d.logChains);
@@ -156,6 +173,7 @@ const cleanAll = snapshot.protocols.filter(passesProductRule).map((p) => ({
   hasTok: recordsNoToken(p) ? 0 : 1,
   logTvl: Math.log(Math.max(1, p.tvl_usd)),
   g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
+  g180: histG180(p.slug),
   age: ageDays(snapshot.as_of, p.listed_at),
   listed_at: p.listed_at,
   logChains: Math.log2(Math.max(1, p.chains.length)),
@@ -165,6 +183,7 @@ function fitOddsSpec(train, spec) {
   const baseRate = mean(train.map((d) => d.hasTok));
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
+  const hs = histStats(train.map((d) => d.g180));
   const catLO = new Map();
   if (spec.cat) {
     const byCat = new Map();
@@ -186,6 +205,7 @@ function fitOddsSpec(train, spec) {
     if (spec.tvl) v.push(d.logTvl - logFloor);
     if (spec.chains) v.push(d.logChains);
     if (spec.cat) v.push(catLO.get(d.cat) ?? 0);
+    if (spec.g180) v.push(stdHist(d.g180, hs));
     if (spec.growth) v.push(d.g7log);
     return v;
   };
@@ -254,19 +274,21 @@ console.log('===================================================================
 const valBase = testValSpec({ flat025: true });
 const valTvl = testValSpec({ tvl: true });
 const valTvlCat = testValSpec({ tvl: true, cat: true });
-const valKept = testValSpec({ tvl: true, eraInter: true, cat: true });
-const valPlusGrowth = testValSpec({ tvl: true, eraInter: true, cat: true, growth: true });
-const valPlusAge = testValSpec({ tvl: true, eraInter: true, cat: true, age: true });
-const valPlusChains = testValSpec({ tvl: true, eraInter: true, cat: true, chains: true });
+const valEra = testValSpec({ tvl: true, eraInter: true, cat: true });
+const valKept = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
+const valPlusGrowth = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, growth: true });
+const valPlusAge = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, age: true });
+const valPlusChains = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true, chains: true });
 
-console.log('\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=1.0, r_era=20)');
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge}])`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
   ['Baseline: Flat 0.25x TVL', valBase, 'BASE'],
   ['+ TVL size elasticity (Huber r=1)', valTvl, 'KEEP'],
   ['+ Category residual (n>=5, k=12)', valTvlCat, 'KEEP'],
-  ['+ Era>=2023 x TVL slope (r=20)', valKept, 'KEEP'],
+  ['+ Era>=2023 x TVL slope (r=20)', valEra, 'KEEP'],
+  ['+ 180d TVL growth (log, r=50)', valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],
@@ -275,20 +297,21 @@ for (const [label, r, verdict] of [
   const looLift = valBase.loo.medX / r.loo.medX;
   console.log(
     `${label.padEnd(36)} | ` +
-      `x${r.wf.medX.toFixed(2)} (${wfLift.toFixed(2)}x)   x${r.wf.gmX.toFixed(2)}  ${r.wf.r2.toFixed(3).padStart(6)} | ` +
-      `x${r.loo.medX.toFixed(2)} (${looLift.toFixed(2)}x)   x${r.loo.gmX.toFixed(2)}  ${r.loo.r2.toFixed(3).padStart(6)} | ${verdict}`,
+      `x${r.wf.medX.toFixed(4)} (${wfLift.toFixed(2)}x) x${r.wf.gmX.toFixed(4)} ${r.wf.r2.toFixed(4).padStart(7)} | ` +
+      `x${r.loo.medX.toFixed(4)} (${looLift.toFixed(2)}x) x${r.loo.gmX.toFixed(4)} ${r.loo.r2.toFixed(4).padStart(7)} | ${verdict}`,
   );
 }
 console.log(
-  `Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
+  `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}] | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
 );
 
 const oddsBase = testOddsSpec({});
 const oddsAge = testOddsSpec({ age: true });
 const oddsAgeCat = testOddsSpec({ age: true, cat: true });
 const oddsAgeCatCh = testOddsSpec({ age: true, cat: true, chains: true });
-const oddsKept = testOddsSpec({ age: true, cat: true, chains: true, tvl: true });
-const oddsPlusGrowth = testOddsSpec({ age: true, cat: true, chains: true, tvl: true, growth: true });
+const oddsRev3 = testOddsSpec({ age: true, cat: true, chains: true, tvl: true });
+const oddsKept = testOddsSpec({ age: true, cat: true, chains: true, tvl: true, g180: true });
+const oddsPlusGrowth = testOddsSpec({ age: true, cat: true, chains: true, tvl: true, g180: true, growth: true });
 
 console.log('\n[2] EMPIRICAL TOKEN LAUNCH ODDS — P(token | features) (442 clean protocols, 192 walk-forward)');
 console.log('Term / Model                         | WF AUC  WF Brier  WF LL  | LOO AUC LOO Brier LOO LL | Verdict');
@@ -298,7 +321,8 @@ for (const [label, r, verdict] of [
   ['+ Listed age (linear years)', oddsAge, 'KEEP'],
   ['+ Category token rate (k=16)', oddsAgeCat, 'KEEP'],
   ['+ Multi-chain breadth', oddsAgeCatCh, 'KEEP'],
-  ['+ TVL scale', oddsKept, 'KEEP'],
+  ['+ TVL scale', oddsRev3, 'KEEP'],
+  ['+ 180d TVL growth (log, std)', oddsKept, 'KEEP'],
   ['+ 7d TVL growth (neg. beta)', oddsPlusGrowth, 'DROP'],
 ]) {
   console.log(
@@ -308,7 +332,7 @@ for (const [label, r, verdict] of [
   );
 }
 console.log(
-  `Note: 7d growth coeff in odds = ${oddsPlusGrowth.fullBeta[5].toFixed(4)} (spurious snapshot-week market beta artifact -> DROPPED).`,
+  `Full odds beta: [${oddsKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}] | Note: 7d growth coeff in odds = ${oddsPlusGrowth.fullBeta.at(-1).toFixed(4)} (spurious snapshot-week market beta artifact -> DROPPED).`,
 );
 
 // Hard assertions: kept models must beat baseline and every dropped valuation term must fail at least one test.
@@ -322,8 +346,8 @@ const assertions = [
   ['Dropped val age fails WF medX & WF R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.wf.r2 < valKept.wf.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
   ['Kept odds improves WF Brier & LOO Brier vs base', oddsKept.wf.brier < oddsBase.wf.brier && oddsKept.loo.brier < oddsBase.loo.brier],
-  ['Kept odds all 4 slopes positive', oddsKept.fullBeta.slice(1).every((b) => b > 0)],
-  ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta[5] < 0],
+  ['Kept odds 4 snapshot slopes positive & val g180 slope negative', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0],
+  ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta.at(-1) < 0],
 ];
 
 let failed = 0;
