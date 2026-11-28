@@ -13,6 +13,7 @@ import {
   clamp,
   fitHuberIRLS,
   fitLogisticIRLS,
+  isPostEra,
   median,
   parseSnapshot,
   passesProductRule,
@@ -58,9 +59,17 @@ const valPeers = snapshot.protocols
 function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
+  const rVec = [0];
+  if (spec.tvl) rVec.push(cfg.huber_ridge);
+  if (spec.eraInter) rVec.push(cfg.era_inter_ridge);
+  if (spec.growth) rVec.push(cfg.huber_ridge);
+  if (spec.age) rVec.push(cfg.huber_ridge);
+  if (spec.chains) rVec.push(cfg.huber_ridge);
   const feat = (d) => {
+    const xTvl = d.logTvl - logFloor;
     const v = [1];
-    if (spec.tvl) v.push(d.logTvl - logFloor);
+    if (spec.tvl) v.push(xTvl);
+    if (spec.eraInter) v.push(isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
     if (spec.growth) v.push(d.g7log);
     if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
     if (spec.chains) v.push(d.logChains);
@@ -68,7 +77,7 @@ function fitValSpec(train, spec) {
   };
   const beta = spec.flat025
     ? [Math.log(0.25)]
-    : fitHuberIRLS(train.map(feat), train.map((d) => d.logRatio), cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters);
+    : fitHuberIRLS(train.map(feat), train.map((d) => d.logRatio), cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters, rVec);
   const base = (d) => feat(d).reduce((s, x, j) => s + x * beta[j], 0);
 
   const catAdj = new Map();
@@ -244,18 +253,20 @@ console.log('===================================================================
 
 const valBase = testValSpec({ flat025: true });
 const valTvl = testValSpec({ tvl: true });
-const valKept = testValSpec({ tvl: true, cat: true });
-const valPlusGrowth = testValSpec({ tvl: true, cat: true, growth: true });
-const valPlusAge = testValSpec({ tvl: true, cat: true, age: true });
-const valPlusChains = testValSpec({ tvl: true, cat: true, chains: true });
+const valTvlCat = testValSpec({ tvl: true, cat: true });
+const valKept = testValSpec({ tvl: true, eraInter: true, cat: true });
+const valPlusGrowth = testValSpec({ tvl: true, eraInter: true, cat: true, growth: true });
+const valPlusAge = testValSpec({ tvl: true, eraInter: true, cat: true, age: true });
+const valPlusChains = testValSpec({ tvl: true, eraInter: true, cat: true, chains: true });
 
-console.log('\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=1.0)');
+console.log('\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=1.0, r_era=20)');
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
   ['Baseline: Flat 0.25x TVL', valBase, 'BASE'],
   ['+ TVL size elasticity (Huber r=1)', valTvl, 'KEEP'],
-  ['+ Category residual (n>=5, k=12)', valKept, 'KEEP'],
+  ['+ Category residual (n>=5, k=12)', valTvlCat, 'KEEP'],
+  ['+ Era>=2023 x TVL slope (r=20)', valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],

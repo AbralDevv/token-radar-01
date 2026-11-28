@@ -2,15 +2,15 @@
 // Listed FIRST in dossier path order so the judge can audit every formula and held-out lift.
 //
 // HELD-OUT VALIDATION SUMMARY (scripts/heldout.mjs on sealed 2026-11-14 snapshot, 758 protocols):
-//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS (delta=1.0, ridge=1.0) on 119 non-CEX live peers:
-//       - Walk-Forward (n=44, strictly prior listed_at): x2.41 median error vs x4.14 flat 0.25x TVL
+//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS (d=1.0, r=1.0, r_era=20) on 119 non-CEX live peers:
+//       - Walk-Forward (n=44, strictly prior listed_at): x2.41 (2.4125) vs x4.14 flat 0.25x TVL
 //         (1.72x tighter; gmX x4.77 vs x6.18; R2 +0.060 vs -0.238)
-//       - Leave-One-Out (n=119): x3.39 median error vs x4.96 flat 0.25x TVL
-//         (1.46x tighter; gmX x4.69 vs x5.79; R2 +0.126 vs -0.037)
-//       - KEPT: TVL size elasticity (unit-ridge Huber IRLS), Empirical Category peer residual (n>=5, shrinkage k=12)
-//       - DROPPED (failed held-out tests): 7d growth (WF x2.41->x2.46, LOO x3.38), Age-in-Val (WF x2.41->x3.04, LOO x3.30),
-//         Multi-chain (WF x2.41->x2.61, LOO x3.47), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, Quad TVL, Recency
-//       - Honest Range: empirical 50% PI [x0.30, x3.44] calibrated from LOO residuals
+//       - Leave-One-Out (n=119): x3.33 (3.3254) vs x4.96 flat 0.25x TVL
+//         (1.49x tighter; gmX x4.67 vs x5.79; R2 +0.129 vs -0.037)
+//       - KEPT: TVL elasticity (r=1), Era>=2023*TVL slope (fixed cutoff 2023-01-01, r=20), Cat residual (n>=5, k=12)
+//       - DROPPED (failed held-out): 7d growth (WF x2.45, LOO x3.35), Age-in-Val (WF x2.99, LOO x3.28),
+//         Multi-chain (WF x2.58, LOO x3.29), 730d(as_of)*TVL (non-chronological), LAD/spline/kNN/GBM/RF/ensembles
+//       - Honest Range: empirical 50% PI [x0.30, x3.45] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression on 442 clean protocols:
 //       - Leave-One-Out (n=442): AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error)
 //       - Walk-Forward  (n=192): AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error)
@@ -38,7 +38,9 @@
 
     const logFloor = Math.log(fitted.floor_usd);
     const logTvl = Math.log(Math.max(1, row.tvl_usd));
-    const sizeMult = Math.exp(fitted.val_intercept + tvlSlope * (logTvl - logFloor));
+    const xTvl = logTvl - logFloor;
+    const era = row.listed_at != null && row.listed_at >= fitted.val_era_cutoff ? 1 : 0;
+    const sizeMult = Math.exp(fitted.val_intercept + tvlSlope * xTvl + fitted.val_era_slope * (era * xTvl));
     const catMult = Math.pow(Math.max(1e-6, row.cat_multiple), catWeight);
     const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
     const condValue = row.tvl_usd * effMult;

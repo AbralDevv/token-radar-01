@@ -28,7 +28,17 @@
   const fAge = (d) => (d == null ? 'unlisted' : d >= 365 ? `${(d / 365).toFixed(1)}y` : `${Math.max(0, Math.round(d))}d`);
   const fHr = (n) => `${n > 0 ? '+' : n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}/hr`;
   const fUsdS = (n) => `${n < 0 ? '-' : n > 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
-  const fmtExp = () => `exp(${FIT.val_intercept} ${FIT.val_tvl_slope < 0 ? '-' : '+'} ${Math.abs(FIT.val_tvl_slope)}·ln(TVL/$50M))`;
+  const fmtExp = (row) => {
+    const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0;
+    if (row) {
+      const era = row.listed_at != null && row.listed_at >= FIT.val_era_cutoff ? 1 : 0;
+      const sl = b1 + era * b2;
+      return `exp(${FIT.val_intercept} ${sl < 0 ? '-' : '+'} ${Math.abs(sl).toFixed(4)}·ln(TVL/$50M)) [${era ? '>=2023' : '<2023'}]`;
+    }
+    return b1 < 0 && b2 < 0
+      ? `exp(${FIT.val_intercept} - (${Math.abs(b1)}+${Math.abs(b2)}·I[>=2023])·ln(TVL/$50M))`
+      : `exp(${FIT.val_intercept} + (${b1}${b2 < 0 ? '' : '+'}${b2}·I[>=2023])·ln(TVL/$50M))`;
+  };
 
   const dirty = () => Math.abs(S.sbTvl - FIT.val_tvl_slope) > 1e-4 || Math.abs(S.sbCat - 1) > 1e-4 || Math.abs(S.sbHor - FIT.horizon_days) > 1 || Math.abs(S.sbPar - FIT.parent_tokenless_prob) > 1e-4;
   const sbOpts = () => ({ tvlSlope: S.sbTvl, catWeight: S.sbCat, horizonDays: S.sbHor, parentProb: S.sbPar });
@@ -167,7 +177,7 @@
     return E('section', { class: 'hero' },
       E('div', null,
         E('h1', { text: 'Pre-Token Launch Valuation, Odds & Costed Farm Terminal' }),
-        E('p', { class: 'hero-sub', text: `Product rule applied before ranking: ${INT.rankable_total} pre-token candidates ranked by fitted Huber TVL-elasticity + category residual valuation (${FIT.live_calib_count} non-CEX live peers) × L2 logistic 2y launch odds (${FIT.odds_clean_count} clean peers). Terms kept only when passing both blind held-out tests.` }),
+        E('p', { class: 'hero-sub', text: `Product rule applied before ranking: ${INT.rankable_total} pre-token candidates ranked by fitted Huber TVL/era-slope + category residual valuation (${FIT.live_calib_count} non-CEX live peers) × L2 logistic 2y launch odds (${FIT.odds_clean_count} clean peers). Terms kept only when passing both blind held-out tests.` }),
         E('div', { class: 'ho-strip', 'aria-label': 'Held-out validation summary' },
           E('span', { class: 'ho-pill' }, 'Walk-Forward: ', E('b', { text: `x${HO.val_wf_med_x.toFixed(2)}` }), ` vs x${HO.val_wf_flat_med_x.toFixed(2)} flat (${HO.val_wf_lift.toFixed(2)}×, n=${HO.val_wf_n})`),
           E('span', { class: 'ho-pill cy' }, 'Odds AUC: ', E('b', { text: `${HO.odds_loo_auc.toFixed(3)} LOO` }), ` / ${HO.odds_wf_auc.toFixed(3)} WF`),
@@ -344,7 +354,7 @@
           E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Rejected Decision' }))),
           E('tbody', null,
             E('tr', null, E('td', { text: 'Flat 0.25x TVL (base)' }), E('td', { class: 'num', text: `x${HO.val_wf_flat_med_x.toFixed(2)} (R² -0.238)` }), E('td', { class: 'num', text: `x${HO.val_loo_flat_med_x.toFixed(2)} (R² -0.037)` }), E('td', { text: 'Baseline reference' })),
-            E('tr', null, E('td', { text: 'Fitted Val (TVL + Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
+            E('tr', null, E('td', { text: 'Fitted Val (TVL+Era+Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
             E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens WF medX & WF/LOO R² (Odds neg. beta)' })),
             E('tr', null, E('td', { text: '+ Age / Chains (Val)' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.wf_med_x.toFixed(2)} / x${cSt.wf_med_x.toFixed(2)}` : 'Degraded WF' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.loo_med_x.toFixed(2)} / x${cSt.loo_med_x.toFixed(2)}` : 'Degraded LOO' }), E('td', { text: 'REJECTED in Val (Listed age & Chains KEPT in Odds)' })),
             E('tr', null, E('td', { text: 'Token Odds (442 clean)' }), E('td', { class: 'num pos', text: `AUC ${HO.odds_wf_auc.toFixed(3)} · B ${HO.odds_wf_brier.toFixed(3)}` }), E('td', { class: 'num pos', text: `AUC ${HO.odds_loo_auc.toFixed(3)} · B ${HO.odds_loo_brier.toFixed(3)}` }), E('td', { text: 'Odds Features: Listed age, Cat, TVL, Chains · DROPPED: 7d' })),
@@ -398,7 +408,7 @@
         E('h3', null, E('span', { text: 'Auditable Valuation & Launch Odds Breakdown' }), E('span', { class: 'parity-note', text: parity ? '✓ Matches board.json exact $' : 'Sandbox live estimate' })),
         E('div', { class: 'breakdown-grid' },
           bdRow('1. Snapshot TVL', 'Reported total value locked', fEx(row.tvl_usd)),
-          bdRow('2. TVL Size Mult', fmtExp(), `× ${chk.size_multiple.toFixed(4)}`),
+          bdRow('2. TVL Size Mult', fmtExp(row), `× ${chk.size_multiple.toFixed(4)}`),
           bdRow('3. Category Residual', row.cat_source === 'category-shrunk' ? `${row.category} (${row.cat_peer_count} live comps, k=${DATA.config.cat_shrinkage_k})` : `Global fallback (<${DATA.config.cat_min_peers} live comps)`, `× ${chk.cat_multiple.toFixed(4)}`),
           bdRow('4. Cond. Launch Val', `TVL × clamped eff mult (${chk.effective_multiple.toFixed(4)}x)`, fEx(chk.cond_value_usd)),
           bdRow('5. 2y Launch Odds', `Survival hazard ${fPr(chk.raw_hazard_2y)}${chk.parent_factor < 1 ? ` × ${chk.parent_factor.toFixed(3)} parent prior` : ' (standalone)'}`, `× ${fPr(chk.launch_odds)}`),

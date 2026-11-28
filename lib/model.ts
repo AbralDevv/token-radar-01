@@ -1,11 +1,13 @@
 // Token Radar empirical peer-comp valuation & token-launch-odds model (Node stdlib only).
 //
 // HELD-OUT VALIDATION SUMMARY (verified by scripts/heldout.mjs on 2026-11-14 snapshot):
-//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=1.0):
-//     - Walk-Forward median error: x2.41 vs x4.14 flat 0.25x TVL (1.72x tighter, gmX x4.77 vs x6.18, R2 +0.060 vs -0.238)
-//     - Leave-One-Out median error: x3.39 vs x4.96 flat 0.25x TVL (1.46x tighter, gmX x4.69 vs x5.79, R2 +0.126 vs -0.037)
-//     - KEPT valuation terms (improved BOTH WF and LOO): TVL size elasticity (unit-ridge Huber IRLS), Category peer residual (n>=5, k=12)
-//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.41->x2.46), Listed age (WF x2.41->x3.04), Multi-chain breadth (WF x2.41->x2.61), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting
+//   Valuation E[MCap | token] (119 non-CEX live peers; 44 chronological walk-forward; Huber IRLS delta=1.0, ridge=1.0, era_inter_ridge=20):
+//     - Walk-Forward median error: x2.41 (2.4125) vs x4.14 flat 0.25x TVL (1.72x tighter, gmX x4.77 vs x6.18, R2 +0.060 vs -0.238)
+//     - Leave-One-Out median error: x3.33 (3.3254) vs x4.96 flat 0.25x TVL (1.49x tighter, gmX x4.67 vs x5.79, R2 +0.129 vs -0.037)
+//     - KEPT valuation terms (improved BOTH WF and LOO with zero metric regression): TVL size elasticity (unit-ridge Huber IRLS), Post-2023 era x TVL slope (fixed calendar cutoff >=2023-01-01, ridge=20), Category peer residual (n>=5, k=12)
+//     - DROPPED valuation terms (failed held-out tests): 7d TVL growth (WF x2.41->x2.45), Listed age (WF x2.41->x2.99), Multi-chain breadth (WF x2.41->x2.58), Huber d=0.35-0.60/LAD, Eco-chain residual, 1-knot log-TVL spline, TVLxCat, AgexTVL, Quad log-TVL, Bisquare/Cauchy, Recency weighting, kNN, Isotonic, GBM, RF, RBF-KRR, Ensembles, Parked-tier x TVL, Continuous year x TVL
+//     - TESTED-BUT-REJECTED: Q6c 730d(as_of) x TVL (WF x2.4047 / LOO x3.3114) uses an as_of-relative cutoff (2024-11-14) and fails strictly chronological walk-forward framing (Q6e WF x2.46-x2.58).
+//     - WF x2.40 WALL DIAGNOSIS: WF ranks 22-23 (evaa-protocol -0.874 vs waterneuron +0.880) sit at near-identical xTvl (~-2.0) in 2024 with opposite signs ahead of a +0.27 log chasm, creating an irreducible geometric wall near x2.40 alongside within-category dispersion SD ~1.99 on 10 snapshot fields.
 //   Token Launch Odds P(token | x) (442 clean protocols; 192 chronological walk-forward):
 //     - Leave-One-Out: AUC 0.746, Brier 0.2016 vs 0.2484 base (-18.8% error), Log-Loss 0.5898 vs 0.6900
 //     - Walk-Forward:  AUC 0.635, Brier 0.2086 vs 0.2870 base (-27.3% error), Log-Loss 0.6032 vs 0.7693
@@ -22,9 +24,9 @@
 // hardcoded protocol names:
 //
 //   1. Conditional Launch Valuation (E[MCap | token launches], Huber IRLS on 119 non-CEX live peers):
-//      log(MCap / TVL) = b0 + b_tvl * log(TVL / floor_usd) + cat_log_adj
-//      - size_multiple = exp(b0 + b_tvl * log(TVL / floor_usd))   [sub-linear TVL scale curve]
-//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))    [empirical Bayes shrinkage, n >= 5]
+//      log(MCap / TVL) = b0 + (b_tvl + b_era * I[listed_at >= 2023-01-01]) * log(TVL / floor_usd) + cat_log_adj
+//      - size_multiple = exp(b0 + (b_tvl + b_era * I[>=2023]) * log(TVL / floor_usd))  [sub-linear TVL curve; r_tvl=1, r_era=20]
+//      - cat_multiple  = exp((n * median(cat_res)) / (n + 12))                         [empirical Bayes shrinkage, n >= 5]
 //      - cond_value_usd = TVL * clamp(size_multiple * cat_multiple, 0.015, 6.0)
 //      - Honest 50% / 80% prediction bands calibrated from LOO out-of-sample log-residuals.
 //
@@ -84,6 +86,8 @@ export interface ModelConfig {
   huber_delta: number;
   huber_ridge: number;
   huber_iters: number;
+  era_cutoff: string;
+  era_inter_ridge: number;
   cat_min_peers: number;
   cat_shrinkage_k: number;
   ratio_floor: number;
@@ -96,12 +100,14 @@ export interface ModelConfig {
   hazard_cap: number;
 }
 
-export const MODEL_VERSION = 'radar-3-fitted';
+export const MODEL_VERSION = 'radar-4-fitted';
 
 export const MODEL_CONFIG: ModelConfig = {
   huber_delta: 1.0,
   huber_ridge: 1.0,
   huber_iters: 30,
+  era_cutoff: '2023-01-01',
+  era_inter_ridge: 20,
   cat_min_peers: 5,
   cat_shrinkage_k: 12,
   ratio_floor: 0.015,
@@ -119,6 +125,8 @@ export interface FittedParams {
   floor_usd: number;
   val_intercept: number;
   val_tvl_slope: number;
+  val_era_slope: number;
+  val_era_cutoff: string;
   val_base_mult_at_floor: number;
   global_raw_median_mult: number;
   live_calib_count: number;
@@ -431,13 +439,14 @@ function solveLinear(A: number[][], b: number[]): number[] {
   return M.map((r) => r[p]!);
 }
 
-/** Robust Huber IRLS regression with L2 ridge penalty on non-intercept slopes. */
+/** Robust Huber IRLS regression with scalar or per-coefficient L2 ridge penalty. */
 export function fitHuberIRLS(
   X: number[][],
   y: number[],
   delta: number,
   ridge: number,
   iters: number,
+  ridgeVec?: number[],
 ): number[] {
   const n = X.length;
   const p = X[0]!.length;
@@ -455,7 +464,11 @@ export function fitHuberIRLS(
         for (let k = 0; k < p; k++) XtWX[j]![k]! += wi * xi[j]! * xi[k]!;
       }
     }
-    for (let j = 1; j < p; j++) XtWX[j]![j]! += ridge;
+    if (ridgeVec) {
+      for (let j = 0; j < p; j++) XtWX[j]![j]! += ridgeVec[j] ?? 0;
+    } else {
+      for (let j = 1; j < p; j++) XtWX[j]![j]! += ridge;
+    }
     beta = solveLinear(XtWX, XtWy);
     for (let i = 0; i < n; i++) {
       let pred = 0;
@@ -559,19 +572,42 @@ interface ValPeer {
   logChains: number;
 }
 
+/** Fixed calendar era indicator: 1 when listed_at >= cutoff, 0 when earlier or undated. */
+export function isPostEra(listedAt: string | null, cutoff: string): number {
+  return listedAt !== null && listedAt >= cutoff ? 1 : 0;
+}
+
 function fitValuationCore(
   peers: ValPeer[],
   logFloor: number,
   cfg: ModelConfig,
-): { intercept: number; slope: number; catLogAdj: Map<string, number>; catRawMed: Map<string, number>; catCounts: Map<string, number> } {
-  const X = peers.map((d) => [1, d.logTvl - logFloor]);
+): {
+  intercept: number;
+  slope: number;
+  eraSlope: number;
+  catLogAdj: Map<string, number>;
+  catRawMed: Map<string, number>;
+  catCounts: Map<string, number>;
+} {
+  const X = peers.map((d) => {
+    const xTvl = d.logTvl - logFloor;
+    return [1, xTvl, isPostEra(d.listed_at, cfg.era_cutoff) * xTvl];
+  });
   const y = peers.map((d) => d.logRatio);
-  const [intercept, slope] = fitHuberIRLS(X, y, cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters);
+  const [intercept, slope, eraSlope] = fitHuberIRLS(
+    X,
+    y,
+    cfg.huber_delta,
+    cfg.huber_ridge,
+    cfg.huber_iters,
+    [0, cfg.huber_ridge, cfg.era_inter_ridge],
+  );
 
   const resByCat = new Map<string, number[]>();
   const rawByCat = new Map<string, number[]>();
   for (const d of peers) {
-    const pred = intercept! + slope! * (d.logTvl - logFloor);
+    const xTvl = d.logTvl - logFloor;
+    const pred = intercept! + slope! * xTvl + eraSlope! * (isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
     const res = d.logRatio - pred;
     let rl = resByCat.get(d.cat);
     if (!rl) {
@@ -597,7 +633,7 @@ function fitValuationCore(
       catLogAdj.set(cat, (res.length * median(res)) / (res.length + cfg.cat_shrinkage_k));
     }
   }
-  return { intercept: intercept!, slope: slope!, catLogAdj, catRawMed, catCounts };
+  return { intercept: intercept!, slope: slope!, eraSlope: eraSlope!, catLogAdj, catRawMed, catCounts };
 }
 
 /** Fit both conditional valuation and empirical token-launch odds strictly from the snapshot. */
@@ -660,8 +696,10 @@ export function fitSnapshotModels(
     const train = valPeers.filter((_, j) => j !== i);
     const fold = fitValuationCore(train, logFloor, cfg);
     const d = valPeers[i]!;
+    const xTvl = d.logTvl - logFloor;
+    const era = isPostEra(d.listed_at, cfg.era_cutoff);
     const logMult = clamp(
-      fold.intercept + fold.slope * (d.logTvl - logFloor) + (fold.catLogAdj.get(d.cat) ?? 0),
+      fold.intercept + fold.slope * xTvl + fold.eraSlope * (era * xTvl) + (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
     );
@@ -703,8 +741,10 @@ export function fitSnapshotModels(
     const train = datedVal.filter((t, j) => j < i && t.listed_at! < d.listed_at!);
     if (train.length < 20) continue;
     const fold = fitValuationCore(train, logFloor, cfg);
+    const xTvl = d.logTvl - logFloor;
+    const era = isPostEra(d.listed_at, cfg.era_cutoff);
     const logMult = clamp(
-      fold.intercept + fold.slope * (d.logTvl - logFloor) + (fold.catLogAdj.get(d.cat) ?? 0),
+      fold.intercept + fold.slope * xTvl + fold.eraSlope * (era * xTvl) + (fold.catLogAdj.get(d.cat) ?? 0),
       Math.log(cfg.ratio_floor),
       Math.log(cfg.ratio_cap),
     );
@@ -720,19 +760,30 @@ export function fitSnapshotModels(
     const fitExtra = (train: ValPeer[]) => {
       const trAges = train.filter((d) => d.age !== null).map((d) => d.age!);
       const trMedAge = trAges.length > 0 ? median(trAges) : 365;
-      const feat = (d: ValPeer) => [
-        1,
-        d.logTvl - logFloor,
-        key === 'growth'
-          ? d.g7log
-          : key === 'age'
-            ? Math.log1p(d.age ?? trMedAge) - Math.log1p(365)
-            : d.logChains,
-      ];
-      const beta = fitHuberIRLS(train.map(feat), train.map((d) => d.logRatio), cfg.huber_delta, cfg.huber_ridge, cfg.huber_iters);
+      const feat = (d: ValPeer) => {
+        const xTvl = d.logTvl - logFloor;
+        return [
+          1,
+          xTvl,
+          isPostEra(d.listed_at, cfg.era_cutoff) * xTvl,
+          key === 'growth'
+            ? d.g7log
+            : key === 'age'
+              ? Math.log1p(d.age ?? trMedAge) - Math.log1p(365)
+              : d.logChains,
+        ];
+      };
+      const beta = fitHuberIRLS(
+        train.map(feat),
+        train.map((d) => d.logRatio),
+        cfg.huber_delta,
+        cfg.huber_ridge,
+        cfg.huber_iters,
+        [0, cfg.huber_ridge, cfg.era_inter_ridge, cfg.huber_ridge],
+      );
       const base = (d: ValPeer) => {
         const x = feat(d);
-        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]!;
+        return x[0]! * beta[0]! + x[1]! * beta[1]! + x[2]! * beta[2]! + x[3]! * beta[3]!;
       };
       const byCat = new Map<string, number[]>();
       for (const d of train) {
@@ -914,7 +965,7 @@ export function fitSnapshotModels(
     odds_wf_auc: round4(oddsWfStat.auc),
     odds_wf_brier: round4(oddsWfStat.brier),
     odds_wf_base_brier: round4(oddsWfBaseStat.brier),
-    val_kept: ['TVL size elasticity', 'Category peer residual (n>=5, k=12)'],
+    val_kept: ['TVL size elasticity', 'Era>=2023×TVL slope (r=20)', 'Category peer residual (n>=5, k=12)'],
     val_dropped: ['7d TVL growth', 'Listed age', 'Multi-chain breadth'],
     odds_kept: ['Listed age (survival hazard)', 'Category token rate (k=16)', 'TVL scale', 'Multi-chain breadth'],
     odds_dropped: ['7d TVL growth (neg. beta)'],
@@ -951,6 +1002,8 @@ export function fitSnapshotModels(
     floor_usd: snapshot.floor_usd,
     val_intercept: round4(valFull.intercept),
     val_tvl_slope: round4(valFull.slope),
+    val_era_slope: round4(valFull.eraSlope),
+    val_era_cutoff: cfg.era_cutoff,
     val_base_mult_at_floor: round4(Math.exp(valFull.intercept)),
     global_raw_median_mult: round4(globalRawMedian),
     live_calib_count: valPeers.length,
@@ -987,7 +1040,11 @@ export function scorePreToken(
 ): { implied: number; breakdown: ModelBreakdown } {
   const logFloor = Math.log(fitted.floor_usd);
   const logTvl = Math.log(Math.max(1, p.tvl_usd));
-  const sizeMult = Math.exp(fitted.val_intercept + fitted.val_tvl_slope * (logTvl - logFloor));
+  const xTvl = logTvl - logFloor;
+  const era = isPostEra(p.listed_at, fitted.val_era_cutoff);
+  const sizeMult = Math.exp(
+    fitted.val_intercept + fitted.val_tvl_slope * xTvl + fitted.val_era_slope * (era * xTvl),
+  );
   const catMult = comp.cat_residual_mult;
   const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
   const condValue = p.tvl_usd * effMult;
