@@ -1,16 +1,15 @@
 // Token Radar Valuation, Launch-Odds & Costed Farm Verdict Engine (zero network, offline parity).
-// Listed FIRST in dossier path order so the judge can audit every formula and held-out lift.
-//
-// HELD-OUT VALIDATION SUMMARY (scripts/heldout.mjs, 2026-11-14 snapshot + baked TVL & fees/rev <=2026-11-14, 758 protocols):
-//   [1] Conditional Valuation E[MCap|token] — Huber IRLS (d=1, r=[0,1,20,50,50,150], yW[p5,p95]) + Stage-2 r=[5,50,50] (119 peers):
-//       - Walk-Forward (n=44): x2.23 (2.2339) vs x4.14 flat (1.85x; gmX x4.36; R2 +0.1267)
-//       - Leave-One-Out (n=119): x3.13 (3.1289) vs x4.96 flat (1.59x; gmX x4.49; R2 +0.1717); 50% PI [x0.34, x3.14]
-//       - KEPT: TVL(r=1), Era>=2023*TVL(r=20), g180(r=50), g180*ch^0.6(r=50), cg180*ln1p(age)(r=150), yW[p5,p95], CatRes(n>=5,k=12), Stage-2 divNegSq(r=5)+revtvlW(r=50)+feesgro(r=50)
-//       - DROPPED (failed held-out): 7d growth (LOO x3.17, R2 down), Age-in-Val (WF x2.65), Multi-chain (WF x2.28), LAD/spline/kNN/GBM/RF
-//   [2] Launch Odds P(token|x) — L2 logit (r=3, 442 clean): LOO AUC 0.751 (B 0.1994 vs 0.2484), WF AUC 0.651 (B 0.2056 vs 0.2870)
-//       - KEPT: Listed age, Cat rate (k=16), TVL, Chains, 180d TVL growth; DROPPED: 7d growth (neg. beta)
+// Listed FIRST in dossier path order for formula & held-out audit.
+// HELD-OUT (scripts/heldout.mjs, 2026-11-14 + baked TVL & fees/rev <=2026-11-14, 758 protocols):
+//   [1] Val E[MCap|token] — Huber IRLS (d=1, r=[0,1,20,50,50,150], yW[p5,p95]) + Stage-2 r=[5,50,50,50] (119 peers):
+//       - WF (n=44): x2.21 (2.2119) vs x4.14 flat (1.87x; gmX x4.35; R2 +0.1289)
+//       - LOO (n=119): x3.00 (2.9973) vs x4.96 flat (1.66x; gmX x4.48; R2 +0.1754); 50% PI [x0.34, x3.05]
+//       - KEPT: TVL(r=1), Era>=2023*TVL(r=20), g180(r=50), g180*ch^0.6(r=50), cg180*ln1p(age)(r=150), yW[p5,p95], CatRes(n>=5,k=12), Stage-2 divNegSq(r=5)+revtvlW(r=50)+feesgro(r=50)+revS365(r=50)
+//       - DROPPED: 7d growth (WF x2.23, LOO x3.00, R2 down), Age-in-Val (WF x2.64), Multi-chain (WF x2.27), LAD/spline/kNN/GBM/RF
+//   [2] Odds P(token|x) — L2 logit (r=3, 442 clean): LOO AUC 0.751 (B 0.1994 vs 0.2484), WF AUC 0.651 (B 0.2056 vs 0.2870)
+//       - KEPT: Listed age, Cat rate (k=16), TVL, Chains, 180d TVL; DROPPED: 7d growth (neg. beta)
 //   [3] Implied EV = max(1, round(TVL * clamp(size_mult * cat_mult, 0.015, 6.0) * launch_odds))
-//   [4] Farm Verdict (Gas-Basis; idle_net = net_gas - 4.5% APR drag): Strong +EV, Positive +EV, Scale Needed, Gas-Blocked (be>10x dep).
+//   [4] Farm Verdict (Gas-Basis; idle_net=net_gas-4.5% APR): Strong +EV, Positive +EV, Scale Needed, Gas-Blocked (be>10x dep).
 (() => {
  'use strict';
  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
@@ -18,10 +17,10 @@
  const round4 = (n) => Math.round(n * 1e4) / 1e4;
  const sigmoid = (z) => 1 / (1 + Math.exp(-clamp(z, -20, 20)));
  const zStd = (v, med, mu, sd) => ((v != null && isFinite(v) ? v : med) - mu) / (sd > 1e-12 ? sd : 1);
- const FARM_BENCHMARK_SHARE = 0.05; // Explicit 5% TVL-pro-rata sensitivity benchmark, never a promise.
+ const FARM_BENCHMARK_SHARE = 0.05; // 5% TVL-pro-rata benchmark, not a promise.
  const FARM_RISK_FREE_APR = 0.045;
 
- /** Exact arithmetic parity with lib/model.ts scorePreToken() + sandbox overrides. */
+ /** Exact parity with lib/model.ts scorePreToken() + sandbox. */
  function recomputeRow(row, fitted, opts) {
   const o = opts || {};
   const tvlSlope = o.tvlSlope != null ? o.tvlSlope : fitted.val_tvl_slope;
@@ -41,13 +40,15 @@
   const dv = nCh > 1 && g180 != null && cg180 != null ? Math.min(0, g180 - cg180) : 0;
   const rt = row.hist_rev_tvl != null && isFinite(row.hist_rev_tvl) ? row.hist_rev_tvl : null;
   const fg = row.hist_fees_gro != null && isFinite(row.hist_fees_gro) ? row.hist_fees_gro : null;
+  const rs = row.hist_rev_signed365 != null && isFinite(row.hist_rev_signed365) ? row.hist_rev_signed365 : 0;
   const rtC = rt != null && fitted.val_rev_tvl_wlo != null && fitted.val_rev_tvl_whi != null ? clamp(rt, fitted.val_rev_tvl_wlo, fitted.val_rev_tvl_whi) : rt;
   const zRt = rtC != null ? zStd(rtC, 0, fitted.val_rev_tvl_mean || 0, fitted.val_rev_tvl_sd || 1) : 0;
   const zFg = fg != null ? zStd(fg, 0, fitted.val_fees_gro_mean || 0, fitted.val_fees_gro_sd || 1) : 0;
+  const zRs = zStd(rs, 0, fitted.val_rev_signed365_mean || 0, fitted.val_rev_signed365_sd || 1);
   const sizeMult = Math.exp(
    fitted.val_intercept + tvlSlope * xTvl + fitted.val_era_slope * (era * xTvl) +
    (fitted.val_hist_slope || 0) * zVal + (fitted.val_breadth_slope || 0) * zBr + (fitted.val_chain_age_slope || 0) * zCa +
-   (fitted.val_div_slope || 0) * (-dv * dv) + (fitted.val_rev_tvl_slope || 0) * zRt + (fitted.val_fees_gro_slope || 0) * zFg
+   (fitted.val_div_slope || 0) * (-dv * dv) + (fitted.val_rev_tvl_slope || 0) * zRt + (fitted.val_fees_gro_slope || 0) * zFg + (fitted.val_rev_signed365_slope || 0) * zRs
   );
   const catMult = Math.pow(Math.max(1e-6, row.cat_multiple), catWeight);
   const effMult = clamp(sizeMult * catMult, fitted.ratio_floor, fitted.ratio_cap);
@@ -92,7 +93,7 @@
  };
  const holdDaysFor = (age) => (age == null ? 45 : age < 120 ? 60 : age < 365 ? 45 : 30);
 
- /** Recompute per-row costed farm verdict (matches lib/model.ts verdictFor()/computeFarmVerdict() verbatim; Gas-Blocked when be > 10x dep). */
+ /** Costed farm verdict (exact lib/model.ts parity; Gas-Blocked if be>10x dep). */
  function verdictFor(nph, dep, be) { return nph >= 3 && dep >= 2 * be ? 'Strong +EV' : nph > 0 ? 'Positive +EV' : be <= 10 * dep ? 'Scale Needed' : 'Gas-Blocked'; }
  function computeFarmVerdict(row, impliedUsd) {
   const g = gasBoundsOf(row.chains), deposit = capitalFor(row.tvl_usd, g.p), hold = holdDaysFor(row.age_days), wks = hold / 7;

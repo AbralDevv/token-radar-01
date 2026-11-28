@@ -28,6 +28,7 @@ import {
   passesProductRule,
   quantile,
   recordsNoToken,
+  revSignedLog365Feature,
   revTvlFeature,
   sigmoid,
   stage2NonNullStats,
@@ -88,6 +89,7 @@ const valPeers = snapshot.protocols
       listed_at: p.listed_at,
       logChains: Math.log2(Math.max(1, p.chains.length)),
       rev180d: fRec?.revenue_180d_sum ?? 0,
+      rev365d: fRec?.revenue_365d_sum ?? 0,
       fees30d: fRec?.fees_30d_sum ?? 0,
       fees180d: fRec?.fees_180d_sum ?? 0,
     };
@@ -172,6 +174,14 @@ function fitValSpec(train, spec) {
       fn: (d) => stdStage2(feesGroFeature(d.fees30d, d.fees180d), feesGroNorm),
       ridge: cfg.hist_fees_gro_ridge,
       norm: feesGroNorm,
+    });
+  }
+  if (spec.revSigned365) {
+    const revSigned365Norm = stage2NonNullStats(train.map((d) => revSignedLog365Feature(d.rev365d, d.tvl)));
+    s2Terms.push({
+      fn: (d) => stdStage2(revSignedLog365Feature(d.rev365d, d.tvl), revSigned365Norm),
+      ridge: cfg.hist_rev_signed365_ridge,
+      norm: revSigned365Norm,
     });
   }
 
@@ -368,13 +378,15 @@ const valEra = testValSpec({ tvl: true, eraInter: true, cat: true });
 const valRev4 = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
 const valRev6 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true });
 const valRev7 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true });
-const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true, revTvlW: true, feesGro: true };
+const valRev8Spec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true, revTvlW: true, feesGro: true };
+const valRev8 = testValSpec(valRev8Spec);
+const valKeptSpec = { ...valRev8Spec, revSigned365: true };
 const valKept = testValSpec(valKeptSpec);
 const valPlusGrowth = testValSpec({ ...valKeptSpec, growth: true });
 const valPlusAge = testValSpec({ ...valKeptSpec, age: true });
 const valPlusChains = testValSpec({ ...valKeptSpec, chains: true });
 
-console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 r=[${cfg.hist_div_ridge},${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge}])`);
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 r=[${cfg.hist_div_ridge},${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge},${cfg.hist_rev_signed365_ridge}])`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
@@ -385,7 +397,8 @@ for (const [label, r, verdict] of [
   ['+ 180d TVL growth g180 (r=50)', valRev4, 'KEEP'],
   [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valRev6, 'KEEP'],
   [`+ Stage-2 -min(0,div)^2 (r=${cfg.hist_div_ridge})`, valRev7, 'KEEP'],
-  [`+ Stage-2 revtvlW+feesgro (r=${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge})`, valKept, 'KEEP'],
+  [`+ Stage-2 revtvlW+feesgro (r=${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge})`, valRev8, 'KEEP'],
+  [`+ Stage-2 revSignedLog365 (r=${cfg.hist_rev_signed365_ridge})`, valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],
@@ -400,6 +413,9 @@ for (const [label, r, verdict] of [
 }
 console.log(
   `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}], Stage-2 slopes=[${valKept.fullS2Slopes.map((b) => b.toFixed(4)).join(', ')}] | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
+);
+console.log(
+  `Raw Rev10 exact check: WF medX=${valKept.wf.medX} (gmX=${valKept.wf.gmX.toFixed(4)}, R2=${valKept.wf.r2.toFixed(4)}) | LOO medX=${valKept.loo.medX} (gmX=${valKept.loo.gmX.toFixed(4)}, R2=${valKept.loo.r2.toFixed(4)})`,
 );
 
 const oddsBase = testOddsSpec({});
@@ -432,18 +448,35 @@ console.log(
   `Full odds beta: [${oddsKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}] | Note: 7d growth coeff in odds = ${oddsPlusGrowth.fullBeta.at(-1).toFixed(4)} (spurious snapshot-week market beta artifact -> DROPPED).`,
 );
 
-// Hard assertions: kept models must beat baseline and every dropped valuation term must fail at least one test.
+// Hard assertions: kept models must beat baseline & Rev8, reproduce Rev10 exact 4-decimal expectations, and every dropped valuation term must fail at least one test.
 const assertions = [
-  ['Kept val WF medX < base & improves vs Rev7', valKept.wf.medX < valBase.wf.medX && valKept.wf.medX < valRev7.wf.medX],
-  ['Kept val LOO medX < base & improves vs Rev7', valKept.loo.medX < valBase.loo.medX && valKept.loo.medX < valRev7.loo.medX],
-  ['Kept val zero-regression gmX & R2 vs Rev7 (WF & LOO)', valKept.wf.gmX <= valRev7.wf.gmX && valKept.loo.gmX <= valRev7.loo.gmX && valKept.wf.r2 >= valRev7.wf.r2 && valKept.loo.r2 >= valRev7.loo.r2],
+  [
+    'Kept val WF medX < base & improves vs Rev8 (exact 2.2119/4.3544/0.1289)',
+    valKept.wf.medX < valBase.wf.medX &&
+      valKept.wf.medX < valRev8.wf.medX &&
+      valKept.wf.medX.toFixed(4) === '2.2119' &&
+      valKept.wf.gmX.toFixed(4) === '4.3544' &&
+      valKept.wf.r2.toFixed(4) === '0.1289',
+  ],
+  [
+    'Kept val LOO medX < base & improves vs Rev8 (exact 2.9973/4.4819/0.1754)',
+    valKept.loo.medX < valBase.loo.medX &&
+      valKept.loo.medX < valRev8.loo.medX &&
+      valKept.loo.medX.toFixed(4) === '2.9973' &&
+      valKept.loo.gmX.toFixed(4) === '4.4819' &&
+      valKept.loo.r2.toFixed(4) === '0.1754',
+  ],
+  [
+    'Kept val zero-regression gmX & R2 vs Rev8 (WF & LOO)',
+    valKept.wf.gmX <= valRev8.wf.gmX && valKept.loo.gmX <= valRev8.loo.gmX && valKept.wf.r2 >= valRev8.wf.r2 && valKept.loo.r2 >= valRev8.loo.r2,
+  ],
   ['Kept val improves over TVL-only on BOTH WF and LOO medX & R2', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX && valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
-  ['Dropped val growth fails LOO medX, WF R2 & LOO R2', valPlusGrowth.loo.medX > valKept.loo.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
+  ['Dropped val growth fails WF & LOO medX and WF & LOO R2', valPlusGrowth.wf.medX > valKept.wf.medX && valPlusGrowth.loo.medX > valKept.loo.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
   // Age stays DROPPED on the chronological walk-forward test & LOO R2; LOO medX alone does not save it.
   ['Dropped val age fails WF medX & LOO R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.loo.r2 < valKept.loo.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
   ['Kept odds improves WF Brier & LOO Brier vs base', oddsKept.wf.brier < oddsBase.wf.brier && oddsKept.loo.brier < oddsBase.loo.brier],
-  ['Kept odds 4 snapshot slopes positive, val g180<=0 & all 3 Stage-2 slopes>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullS2Slopes.length === 3 && valKept.fullS2Slopes.every((b) => b > 0)],
+  ['Kept odds 4 snapshot slopes positive, val g180<=0 & all 4 Stage-2 slopes>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullS2Slopes.length === 4 && valKept.fullS2Slopes.every((b) => b > 0)],
   ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta.at(-1) < 0],
 ];
 
