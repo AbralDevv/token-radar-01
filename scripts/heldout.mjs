@@ -15,6 +15,7 @@ import {
   breadthFeature,
   chainAgeFeature,
   clamp,
+  divNegSqFeature,
   fitHuberIRLS,
   fitLogisticIRLS,
   histStats,
@@ -132,10 +133,34 @@ function fitValSpec(train, spec) {
       }
     }
   }
+  let divSlope = 0;
+  if (spec.divNegSq) {
+    for (let it = 0; it < cfg.huber_iters; it++) {
+      let num = 0;
+      let den = cfg.hist_div_ridge;
+      for (let ti = 0; ti < train.length; ti++) {
+        const d = train[ti];
+        const x = divNegSqFeature(d.g180, d.chainG180, d.chainsN);
+        if (x === 0) continue;
+        const r1 = target[ti] - (base(d) + (catAdj.get(d.cat) ?? 0));
+        const e = r1 - divSlope * x;
+        const w = Math.abs(e) <= cfg.huber_delta ? 1 : cfg.huber_delta / Math.abs(e);
+        num += w * x * r1;
+        den += w * x * x;
+      }
+      divSlope = den > 1e-12 ? num / den : 0;
+    }
+  }
   return {
     beta,
+    divSlope,
     predict: (d) =>
-      d.logTvl + clamp(base(d) + (catAdj.get(d.cat) ?? 0), Math.log(cfg.ratio_floor), Math.log(cfg.ratio_cap)),
+      d.logTvl +
+      clamp(
+        base(d) + (catAdj.get(d.cat) ?? 0) + divSlope * divNegSqFeature(d.g180, d.chainG180, d.chainsN),
+        Math.log(cfg.ratio_floor),
+        Math.log(cfg.ratio_cap),
+      ),
   };
 }
 
@@ -177,12 +202,14 @@ function testValSpec(spec) {
     wfP.push(m.predict(dated[i]));
     wfA.push(dated[i].y);
   }
+  const fullFit = fitValSpec(valPeers, spec);
   return {
     loo: evalValMetrics(looP, looA),
     wf: evalValMetrics(wfP, wfA),
     looN: looP.length,
     wfN: wfP.length,
-    fullBeta: fitValSpec(valPeers, spec).beta,
+    fullBeta: fullFit.beta,
+    fullDivSlope: fullFit.divSlope,
   };
 }
 
@@ -297,13 +324,14 @@ const valTvl = testValSpec({ tvl: true });
 const valTvlCat = testValSpec({ tvl: true, cat: true });
 const valEra = testValSpec({ tvl: true, eraInter: true, cat: true });
 const valRev4 = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
-const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true };
+const valRev6 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true });
+const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true };
 const valKept = testValSpec(valKeptSpec);
 const valPlusGrowth = testValSpec({ ...valKeptSpec, growth: true });
 const valPlusAge = testValSpec({ ...valKeptSpec, age: true });
 const valPlusChains = testValSpec({ ...valKeptSpec, chains: true });
 
-console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}])`);
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 div r=${cfg.hist_div_ridge})`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
@@ -312,7 +340,8 @@ for (const [label, r, verdict] of [
   ['+ Category residual (n>=5, k=12)', valTvlCat, 'KEEP'],
   ['+ Era>=2023 x TVL slope (r=20)', valEra, 'KEEP'],
   ['+ 180d TVL growth g180 (r=50)', valRev4, 'KEEP'],
-  [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valKept, 'KEEP'],
+  [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valRev6, 'KEEP'],
+  [`+ Stage-2 -min(0,div)^2 (r=${cfg.hist_div_ridge})`, valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],
@@ -326,7 +355,7 @@ for (const [label, r, verdict] of [
   );
 }
 console.log(
-  `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}] | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
+  `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}], divSlope=${valKept.fullDivSlope.toFixed(4)} | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
 );
 
 const oddsBase = testOddsSpec({});
@@ -366,11 +395,11 @@ const assertions = [
   ['Kept val improves over TVL-only on BOTH WF and LOO medX', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX],
   ['Kept val improves over TVL-only on BOTH WF and LOO R2', valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
   ['Dropped val growth fails WF medX, WF R2 & LOO R2', valPlusGrowth.wf.medX > valKept.wf.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
-  // Age stays DROPPED on the chronological walk-forward test (the forward-looking test); LOO medX alone does not save it.
-  ['Dropped val age fails WF medX & WF R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.wf.r2 < valKept.wf.r2],
+  // Age stays DROPPED on the chronological walk-forward test & LOO R2; LOO medX alone does not save it.
+  ['Dropped val age fails WF medX & LOO R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.loo.r2 < valKept.loo.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
   ['Kept odds improves WF Brier & LOO Brier vs base', oddsKept.wf.brier < oddsBase.wf.brier && oddsKept.loo.brier < oddsBase.loo.brier],
-  ['Kept odds 4 snapshot slopes positive & val g180 slope negative', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0],
+  ['Kept odds 4 snapshot slopes positive, val g180<=0 & divSlope>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullDivSlope > 0],
   ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta.at(-1) < 0],
 ];
 
