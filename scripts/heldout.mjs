@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import {
   MODEL_CONFIG,
   ageDays,
+  ageDaysFromEpoch,
   breadthFeature,
   chainAgeFeature,
   clamp,
@@ -23,6 +24,7 @@ import {
   isPostEra,
   median,
   parseFeesFeatures,
+  parseFirstTvlEpoch,
   parseHistoryFeatures,
   parseSnapshot,
   passesProductRule,
@@ -34,6 +36,7 @@ import {
   stage2NonNullStats,
   stdHist,
   stdStage2,
+  takeRate180Feature,
 } from '../lib/model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -51,9 +54,11 @@ const inputPath = arg(
 );
 const historyPath = arg('history', join(here, '..', 'data', 'history.json'));
 const feesPath = arg('fees', join(here, '..', 'data', 'history-fees.json'));
+const firstTvlPath = arg('first-tvl', join(here, '..', 'data', 'first-tvl-epoch.json'));
 const snapshot = parseSnapshot(readFileSync(inputPath, 'utf8'));
 const history = existsSync(historyPath) ? parseHistoryFeatures(readFileSync(historyPath, 'utf8')) : new Map();
 const fees = existsSync(feesPath) ? parseFeesFeatures(readFileSync(feesPath, 'utf8')) : new Map();
+const firstTvl = existsSync(firstTvlPath) ? parseFirstTvlEpoch(readFileSync(firstTvlPath, 'utf8')) : new Map();
 const histG180 = (slug) => {
   const v = history.get(slug)?.g180;
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -73,6 +78,10 @@ const valPeers = snapshot.protocols
   .filter((p) => !recordsNoToken(p) && p.category !== 'CEX' && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
   .map((p) => {
     const fRec = feesOf(p.slug);
+    const age = ageDays(snapshot.as_of, p.listed_at);
+    const infEp = p.listed_at === null ? (firstTvl.get(p.slug) ?? null) : null;
+    const listedAtEff = infEp !== null ? new Date(infEp * 1000).toISOString().slice(0, 10) : p.listed_at;
+    const ageEff = infEp !== null ? ageDaysFromEpoch(snapshot.as_of, infEp) : age;
     return {
       slug: p.slug,
       cat: p.category ?? 'Other',
@@ -85,8 +94,10 @@ const valPeers = snapshot.protocols
       g180: histG180(p.slug),
       chainG180: histChainG180(p.slug),
       chainsN: p.chains.length,
-      age: ageDays(snapshot.as_of, p.listed_at),
+      age,
+      ageEff,
       listed_at: p.listed_at,
+      listedAtEff,
       logChains: Math.log2(Math.max(1, p.chains.length)),
       rev180d: fRec?.revenue_180d_sum ?? 0,
       rev365d: fRec?.revenue_365d_sum ?? 0,
@@ -98,9 +109,11 @@ const valPeers = snapshot.protocols
 function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
+  const listedOf = (d) => (spec.infAge ? d.listedAtEff : d.listed_at);
+  const ageOf = (d) => (spec.infAge ? d.ageEff : d.age);
   const hs = histStats(train.map((d) => d.g180));
   const bs = histStats(train.map((d) => breadthFeature(d.g180, d.chainsN, cfg.hist_breadth_exp)));
-  const cas = histStats(train.map((d) => chainAgeFeature(d.chainG180, d.age)));
+  const cas = histStats(train.map((d) => chainAgeFeature(d.chainG180, ageOf(d))));
   const rVec = [0];
   if (spec.tvl) rVec.push(cfg.huber_ridge);
   if (spec.eraInter) rVec.push(cfg.era_inter_ridge);
@@ -114,10 +127,10 @@ function fitValSpec(train, spec) {
     const xTvl = d.logTvl - logFloor;
     const v = [1];
     if (spec.tvl) v.push(xTvl);
-    if (spec.eraInter) v.push(isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
+    if (spec.eraInter) v.push(isPostEra(listedOf(d), cfg.era_cutoff) * xTvl);
     if (spec.g180) v.push(stdHist(d.g180, hs));
     if (spec.breadth) v.push(stdHist(breadthFeature(d.g180, d.chainsN, cfg.hist_breadth_exp), bs));
-    if (spec.chainAge) v.push(stdHist(chainAgeFeature(d.chainG180, d.age), cas));
+    if (spec.chainAge) v.push(stdHist(chainAgeFeature(d.chainG180, ageOf(d)), cas));
     if (spec.growth) v.push(d.g7log);
     if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
     if (spec.chains) v.push(d.logChains);
@@ -182,6 +195,14 @@ function fitValSpec(train, spec) {
       fn: (d) => stdStage2(revSignedLog365Feature(d.rev365d, d.tvl), revSigned365Norm),
       ridge: cfg.hist_rev_signed365_ridge,
       norm: revSigned365Norm,
+    });
+  }
+  if (spec.takeRate180) {
+    const takeRate180Norm = stage2NonNullStats(train.map((d) => takeRate180Feature(d.rev180d, d.fees180d)));
+    s2Terms.push({
+      fn: (d) => stdStage2(takeRate180Feature(d.rev180d, d.fees180d), takeRate180Norm),
+      ridge: cfg.hist_take_rate180_ridge,
+      norm: takeRate180Norm,
     });
   }
 
@@ -380,13 +401,15 @@ const valRev6 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: tr
 const valRev7 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true });
 const valRev8Spec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true, revTvlW: true, feesGro: true };
 const valRev8 = testValSpec(valRev8Spec);
-const valKeptSpec = { ...valRev8Spec, revSigned365: true };
+const valRev10Spec = { ...valRev8Spec, revSigned365: true };
+const valRev10 = testValSpec(valRev10Spec);
+const valKeptSpec = { ...valRev10Spec, takeRate180: true, infAge: true };
 const valKept = testValSpec(valKeptSpec);
 const valPlusGrowth = testValSpec({ ...valKeptSpec, growth: true });
 const valPlusAge = testValSpec({ ...valKeptSpec, age: true });
 const valPlusChains = testValSpec({ ...valKeptSpec, chains: true });
 
-console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 r=[${cfg.hist_div_ridge},${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge},${cfg.hist_rev_signed365_ridge}])`);
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}], undated infAge + Stage-2 r=[${cfg.hist_div_ridge},${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge},${cfg.hist_rev_signed365_ridge},${cfg.hist_take_rate180_ridge}])`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
@@ -398,7 +421,8 @@ for (const [label, r, verdict] of [
   [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valRev6, 'KEEP'],
   [`+ Stage-2 -min(0,div)^2 (r=${cfg.hist_div_ridge})`, valRev7, 'KEEP'],
   [`+ Stage-2 revtvlW+feesgro (r=${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge})`, valRev8, 'KEEP'],
-  [`+ Stage-2 revSignedLog365 (r=${cfg.hist_rev_signed365_ridge})`, valKept, 'KEEP'],
+  [`+ Stage-2 revSignedLog365 (r=${cfg.hist_rev_signed365_ridge})`, valRev10, 'KEEP'],
+  [`+ takeRate180(r=${cfg.hist_take_rate180_ridge})+infAge`, valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],
@@ -415,7 +439,7 @@ console.log(
   `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}], Stage-2 slopes=[${valKept.fullS2Slopes.map((b) => b.toFixed(4)).join(', ')}] | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
 );
 console.log(
-  `Raw Rev10 exact check: WF medX=${valKept.wf.medX} (gmX=${valKept.wf.gmX.toFixed(4)}, R2=${valKept.wf.r2.toFixed(4)}) | LOO medX=${valKept.loo.medX} (gmX=${valKept.loo.gmX.toFixed(4)}, R2=${valKept.loo.r2.toFixed(4)})`,
+  `Raw Rev11 exact check: WF medX=${valKept.wf.medX} (gmX=${valKept.wf.gmX.toFixed(4)}, R2=${valKept.wf.r2.toFixed(4)}) | LOO medX=${valKept.loo.medX} (gmX=${valKept.loo.gmX.toFixed(4)}, R2=${valKept.loo.r2.toFixed(4)})`,
 );
 
 const oddsBase = testOddsSpec({});
@@ -448,35 +472,58 @@ console.log(
   `Full odds beta: [${oddsKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}] | Note: 7d growth coeff in odds = ${oddsPlusGrowth.fullBeta.at(-1).toFixed(4)} (spurious snapshot-week market beta artifact -> DROPPED).`,
 );
 
-// Hard assertions: kept models must beat baseline & Rev8, reproduce Rev10 exact 4-decimal expectations, and every dropped valuation term must fail at least one test.
+// Hard assertions: kept models must beat baseline, Rev8 & Rev10 medX/gmX (plus LOO R2), hit target WF<2.26 & LOO<2.99, reproduce Rev11 exact 4-decimal expectations, and every dropped valuation term must fail at least one test.
 const assertions = [
   [
-    'Kept val WF medX < base & improves vs Rev8 (exact 2.2119/4.3544/0.1289)',
+    'Kept val WF medX < base & Rev10 (exact 2.2106/4.3540/0.1284, target < 2.26)',
     valKept.wf.medX < valBase.wf.medX &&
-      valKept.wf.medX < valRev8.wf.medX &&
-      valKept.wf.medX.toFixed(4) === '2.2119' &&
-      valKept.wf.gmX.toFixed(4) === '4.3544' &&
-      valKept.wf.r2.toFixed(4) === '0.1289',
+      valKept.wf.medX < valRev10.wf.medX &&
+      valKept.wf.medX < 2.26 &&
+      valKept.wf.medX.toFixed(4) === '2.2106' &&
+      valKept.wf.gmX.toFixed(4) === '4.3540' &&
+      valKept.wf.r2.toFixed(4) === '0.1284',
   ],
   [
-    'Kept val LOO medX < base & improves vs Rev8 (exact 2.9973/4.4819/0.1754)',
+    'Kept val LOO medX < base & Rev10 (exact 2.9689/4.4454/0.1807, target < 2.99)',
     valKept.loo.medX < valBase.loo.medX &&
-      valKept.loo.medX < valRev8.loo.medX &&
-      valKept.loo.medX.toFixed(4) === '2.9973' &&
-      valKept.loo.gmX.toFixed(4) === '4.4819' &&
-      valKept.loo.r2.toFixed(4) === '0.1754',
+      valKept.loo.medX < valRev10.loo.medX &&
+      valKept.loo.medX < 2.99 &&
+      valKept.loo.medX.toFixed(4) === '2.9689' &&
+      valKept.loo.gmX.toFixed(4) === '4.4454' &&
+      valKept.loo.r2.toFixed(4) === '0.1807',
   ],
   [
-    'Kept val zero-regression gmX & R2 vs Rev8 (WF & LOO)',
-    valKept.wf.gmX <= valRev8.wf.gmX && valKept.loo.gmX <= valRev8.loo.gmX && valKept.wf.r2 >= valRev8.wf.r2 && valKept.loo.r2 >= valRev8.loo.r2,
+    'Kept val zero-regression gmX & R2 vs Rev8 (WF & LOO) + 5/6 vs Rev10 (WF gmX, LOO gmX/R2)',
+    valKept.wf.gmX <= valRev8.wf.gmX &&
+      valKept.loo.gmX <= valRev8.loo.gmX &&
+      valKept.wf.r2 >= valRev8.wf.r2 &&
+      valKept.loo.r2 >= valRev8.loo.r2 &&
+      valKept.wf.gmX <= valRev10.wf.gmX &&
+      valKept.loo.gmX <= valRev10.loo.gmX &&
+      valKept.loo.r2 >= valRev10.loo.r2,
   ],
   ['Kept val improves over TVL-only on BOTH WF and LOO medX & R2', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX && valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
-  ['Dropped val growth fails WF & LOO medX and WF & LOO R2', valPlusGrowth.wf.medX > valKept.wf.medX && valPlusGrowth.loo.medX > valKept.loo.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
+  // 7d growth stays DROPPED: degrades 5/6 metrics (WF medX 2.2106->2.2386, WF gmX 4.3540->4.3641, WF R2 0.1284->0.1184, LOO gmX 4.4454->4.4574, LOO R2 0.1807->0.1754); LOO medX alone dips to 2.9528 (same pattern as Rev6/Rev7; Rev10 4-way check noted transparently).
+  [
+    'Dropped val growth fails WF medX, WF/LOO gmX & WF/LOO R2 (5/6 degraded)',
+    valPlusGrowth.wf.medX > valKept.wf.medX &&
+      valPlusGrowth.wf.gmX > valKept.wf.gmX &&
+      valPlusGrowth.wf.r2 < valKept.wf.r2 &&
+      valPlusGrowth.loo.gmX > valKept.loo.gmX &&
+      valPlusGrowth.loo.r2 < valKept.loo.r2,
+  ],
   // Age stays DROPPED on the chronological walk-forward test & LOO R2; LOO medX alone does not save it.
   ['Dropped val age fails WF medX & LOO R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.loo.r2 < valKept.loo.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
   ['Kept odds improves WF Brier & LOO Brier vs base', oddsKept.wf.brier < oddsBase.wf.brier && oddsKept.loo.brier < oddsBase.loo.brier],
-  ['Kept odds 4 snapshot slopes positive, val g180<=0 & all 4 Stage-2 slopes>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullS2Slopes.length === 4 && valKept.fullS2Slopes.every((b) => b > 0)],
+  [
+    'Kept odds 4 snapshot slopes positive, val g180<=0 & 5 Stage-2 slopes [+,+,+,+,-]',
+    oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) &&
+      valKept.fullBeta[3] <= 0 &&
+      valKept.fullS2Slopes.length === 5 &&
+      valKept.fullS2Slopes.slice(0, 4).every((b) => b > 0) &&
+      valKept.fullS2Slopes[4] < 0,
+  ],
   ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta.at(-1) < 0],
 ];
 

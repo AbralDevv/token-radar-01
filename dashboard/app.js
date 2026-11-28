@@ -29,10 +29,10 @@
  const fHr = (n) => `${n > 0 ? '+' : n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}/hr`;
  const fUsdS = (n) => `${n < 0 ? '-' : n > 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
  const fmtExp = (row) => {
-  const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0, b3 = FIT.val_hist_slope || 0, b4 = FIT.val_breadth_slope || 0, b5 = FIT.val_chain_age_slope || 0, b6 = FIT.val_div_slope || 0, b7 = FIT.val_rev_tvl_slope || 0, b8 = FIT.val_fees_gro_slope || 0, b9 = FIT.val_rev_signed365_slope || 0;
+  const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0, b3 = FIT.val_hist_slope || 0, b4 = FIT.val_breadth_slope || 0, b5 = FIT.val_chain_age_slope || 0, b6 = FIT.val_div_slope || 0, b7 = FIT.val_rev_tvl_slope || 0, b8 = FIT.val_fees_gro_slope || 0, b9 = FIT.val_rev_signed365_slope || 0, b10 = FIT.val_take_rate180_slope || 0;
   const tm = (b, n) => (b ? ` ${b < 0 ? '-' : '+'} ${Math.abs(b).toFixed(4)}·${n}` : '');
   const h1 = tm(b3, 'z(g180)') + tm(b4, `z(g180·ch^${FIT.val_breadth_exp || 0.6})`) + tm(b5, 'z(cg180·ln1p(age))');
-  const h2 = tm(b6, 'div²₋') + tm(b7, 'z(rev/TVL)') + tm(b8, 'z(feeGro)') + tm(b9, 'z(revS365)');
+  const h2 = tm(b6, 'div²₋') + tm(b7, 'z(rev/TVL)') + tm(b8, 'z(feeGro)') + tm(b9, 'z(revS365)') + tm(b10, 'z(takeR)');
   if (row) {
    const era = row.listed_at != null && row.listed_at >= FIT.val_era_cutoff ? 1 : 0, sl = b1 + era * b2;
    const gT = row.hist_g180 != null ? `g180=${row.hist_g180 >= 0 ? '+' : ''}${row.hist_g180.toFixed(2)}` : 'g180=med';
@@ -40,7 +40,8 @@
    const rT = row.hist_rev_tvl != null ? `rt=${row.hist_rev_tvl.toFixed(2)}` : 'rt=0';
    const fT = row.hist_fees_gro != null ? `fg=${row.hist_fees_gro.toFixed(2)}` : 'fg=0';
    const sT = `r365=${(row.hist_rev_signed365 || 0).toFixed(2)}`;
-   return `exp(${FIT.val_intercept} ${sl < 0 ? '-' : '+'} ${Math.abs(sl).toFixed(4)}·ln(TVL/$50M)${h1}${h2}) [${era ? '>=2023' : '<2023'}, ${gT}, ${cT}, ${rT}, ${fT}, ${sT}]`;
+   const trT = row.hist_take_rate180 != null ? `tr=${row.hist_take_rate180.toFixed(2)}` : 'tr=0';
+   return `exp(${FIT.val_intercept} ${sl < 0 ? '-' : '+'} ${Math.abs(sl).toFixed(4)}·ln(TVL/$50M)${h1}${h2}) [${era ? '>=2023' : '<2023'}, ${gT}, ${cT}, ${rT}, ${fT}, ${sT}, ${trT}]`;
   }
   const head = b1 < 0 && b2 < 0
    ? `exp(${FIT.val_intercept} - (${Math.abs(b1)}+${Math.abs(b2)}·I[>=2023])·ln(TVL/$50M)`
@@ -175,7 +176,7 @@
   return E('section', { class: 'hero' },
    E('div', null,
     E('h1', { text: 'Pre-Token Launch Valuation, Odds & Costed Farm Terminal' }),
-    E('p', { class: 'hero-sub', text: `Product rule before ranking: ${INT.rankable_total} pre-token rows by Huber TVL/era + 180d TVL/breadth/chain-age + Stage-2 neg-div/rev/fees/rev365 (yW[p5,p95]) + CatRes (${FIT.live_calib_count} peers) × L2 logit 2y odds (${FIT.odds_clean_count} peers). Terms kept only on blind lift.` }),
+    E('p', { class: 'hero-sub', text: `Product rule before ranking: ${INT.rankable_total} pre-token rows by Huber TVL/era + 180d TVL/breadth/chain-age + Stage-2 neg-div/rev/fees/rev365/takeR (yW[p5,p95]) + CatRes (${FIT.live_calib_count} peers) × L2 logit 2y odds (${FIT.odds_clean_count} peers). Terms kept only on blind lift.` }),
     E('div', { class: 'ho-strip', 'aria-label': 'Held-out validation summary' },
      E('span', { class: 'ho-pill' }, 'Walk-Forward: ', E('b', { text: `x${HO.val_wf_med_x.toFixed(2)}` }), ` vs x${HO.val_wf_flat_med_x.toFixed(2)} flat (${HO.val_wf_lift.toFixed(2)}×, n=${HO.val_wf_n})`),
      E('span', { class: 'ho-pill cy' }, 'Odds AUC: ', E('b', { text: `${HO.odds_loo_auc.toFixed(3)} LOO` }), ` / ${HO.odds_wf_auc.toFixed(3)} WF`),
@@ -352,8 +353,8 @@
      E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Rejected Decision' }))),
      E('tbody', null,
       E('tr', null, E('td', { text: 'Flat 0.25x TVL (base)' }), E('td', { class: 'num', text: `x${HO.val_wf_flat_med_x.toFixed(2)} (R² -0.238)` }), E('td', { class: 'num', text: `x${HO.val_loo_flat_med_x.toFixed(2)} (R² -0.037)` }), E('td', { text: 'Baseline reference' })),
-      E('tr', null, E('td', { text: 'Fitted Val (10-feat+yW+Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
-      E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens WF/LOO medX & R² (Odds neg. beta)' })),
+      E('tr', null, E('td', { text: 'Fitted Val (11-feat+yW+Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
+      E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens WF medX & WF/LOO R² (Odds neg. beta)' })),
       E('tr', null, E('td', { text: '+ Age / Chains (Val)' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.wf_med_x.toFixed(2)} / x${cSt.wf_med_x.toFixed(2)}` : 'Degraded WF' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.loo_med_x.toFixed(2)} / x${cSt.loo_med_x.toFixed(2)}` : 'Degraded LOO' }), E('td', { text: 'REJECTED in Val (Listed age & Chains KEPT in Odds)' })),
       E('tr', null, E('td', { text: 'Token Odds (442 clean)' }), E('td', { class: 'num pos', text: `AUC ${HO.odds_wf_auc.toFixed(3)} · B ${HO.odds_wf_brier.toFixed(3)}` }), E('td', { class: 'num pos', text: `AUC ${HO.odds_loo_auc.toFixed(3)} · B ${HO.odds_loo_brier.toFixed(3)}` }), E('td', { text: 'Odds: Age, Cat, TVL, Chains, 180d TVL · DROPPED: 7d' })),
      ),
