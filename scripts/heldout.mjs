@@ -16,18 +16,23 @@ import {
   chainAgeFeature,
   clamp,
   divNegSqFeature,
+  feesGroFeature,
   fitHuberIRLS,
   fitLogisticIRLS,
   histStats,
   isPostEra,
   median,
+  parseFeesFeatures,
   parseHistoryFeatures,
   parseSnapshot,
   passesProductRule,
   quantile,
   recordsNoToken,
+  revTvlFeature,
   sigmoid,
+  stage2NonNullStats,
   stdHist,
+  stdStage2,
 } from '../lib/model.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -44,8 +49,10 @@ const inputPath = arg(
   '/home/hatch/bounties/token-radar-01-kit/token-radar-01-kit/input/snapshot.json',
 );
 const historyPath = arg('history', join(here, '..', 'data', 'history.json'));
+const feesPath = arg('fees', join(here, '..', 'data', 'history-fees.json'));
 const snapshot = parseSnapshot(readFileSync(inputPath, 'utf8'));
 const history = existsSync(historyPath) ? parseHistoryFeatures(readFileSync(historyPath, 'utf8')) : new Map();
+const fees = existsSync(feesPath) ? parseFeesFeatures(readFileSync(feesPath, 'utf8')) : new Map();
 const histG180 = (slug) => {
   const v = history.get(slug)?.g180;
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
@@ -54,6 +61,7 @@ const histChainG180 = (slug) => {
   const v = history.get(slug)?.chain_g180;
   return typeof v === 'number' && Number.isFinite(v) ? v : null;
 };
+const feesOf = (slug) => fees.get(slug);
 const cfg = MODEL_CONFIG;
 const logFloor = Math.log(snapshot.floor_usd);
 const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
@@ -62,22 +70,28 @@ const mean = (a) => a.reduce((s, v) => s + v, 0) / a.length;
 
 const valPeers = snapshot.protocols
   .filter((p) => !recordsNoToken(p) && p.category !== 'CEX' && p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0)
-  .map((p) => ({
-    slug: p.slug,
-    cat: p.category ?? 'Other',
-    tvl: p.tvl_usd,
-    mcap: p.mcap_usd,
-    y: Math.log(p.mcap_usd),
-    logRatio: Math.log(p.mcap_usd / p.tvl_usd),
-    logTvl: Math.log(p.tvl_usd),
-    g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
-    g180: histG180(p.slug),
-    chainG180: histChainG180(p.slug),
-    chainsN: p.chains.length,
-    age: ageDays(snapshot.as_of, p.listed_at),
-    listed_at: p.listed_at,
-    logChains: Math.log2(Math.max(1, p.chains.length)),
-  }));
+  .map((p) => {
+    const fRec = feesOf(p.slug);
+    return {
+      slug: p.slug,
+      cat: p.category ?? 'Other',
+      tvl: p.tvl_usd,
+      mcap: p.mcap_usd,
+      y: Math.log(p.mcap_usd),
+      logRatio: Math.log(p.mcap_usd / p.tvl_usd),
+      logTvl: Math.log(p.tvl_usd),
+      g7log: Math.log(1 + clamp(p.change_7d ?? 0, -80, 200) / 100),
+      g180: histG180(p.slug),
+      chainG180: histChainG180(p.slug),
+      chainsN: p.chains.length,
+      age: ageDays(snapshot.as_of, p.listed_at),
+      listed_at: p.listed_at,
+      logChains: Math.log2(Math.max(1, p.chains.length)),
+      rev180d: fRec?.revenue_180d_sum ?? 0,
+      fees30d: fRec?.fees_30d_sum ?? 0,
+      fees180d: fRec?.fees_180d_sum ?? 0,
+    };
+  });
 
 function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
@@ -133,31 +147,59 @@ function fitValSpec(train, spec) {
       }
     }
   }
-  let divSlope = 0;
+  const s2Terms = [];
   if (spec.divNegSq) {
-    for (let it = 0; it < cfg.huber_iters; it++) {
-      let num = 0;
-      let den = cfg.hist_div_ridge;
-      for (let ti = 0; ti < train.length; ti++) {
-        const d = train[ti];
-        const x = divNegSqFeature(d.g180, d.chainG180, d.chainsN);
-        if (x === 0) continue;
-        const r1 = target[ti] - (base(d) + (catAdj.get(d.cat) ?? 0));
-        const e = r1 - divSlope * x;
-        const w = Math.abs(e) <= cfg.huber_delta ? 1 : cfg.huber_delta / Math.abs(e);
-        num += w * x * r1;
-        den += w * x * x;
-      }
-      divSlope = den > 1e-12 ? num / den : 0;
-    }
+    s2Terms.push({
+      fn: (d) => divNegSqFeature(d.g180, d.chainG180, d.chainsN),
+      ridge: cfg.hist_div_ridge,
+      norm: null,
+    });
   }
+  if (spec.revTvlW) {
+    const revTvlNorm = stage2NonNullStats(
+      train.map((d) => revTvlFeature(d.rev180d, d.tvl)),
+      [cfg.hist_rev_tvl_winsor_lo, cfg.hist_rev_tvl_winsor_hi],
+    );
+    s2Terms.push({
+      fn: (d) => stdStage2(revTvlFeature(d.rev180d, d.tvl), revTvlNorm),
+      ridge: cfg.hist_rev_tvl_ridge,
+      norm: revTvlNorm,
+    });
+  }
+  if (spec.feesGro) {
+    const feesGroNorm = stage2NonNullStats(train.map((d) => feesGroFeature(d.fees30d, d.fees180d)));
+    s2Terms.push({
+      fn: (d) => stdStage2(feesGroFeature(d.fees30d, d.fees180d), feesGroNorm),
+      ridge: cfg.hist_fees_gro_ridge,
+      norm: feesGroNorm,
+    });
+  }
+
+  let s2Slopes = [];
+  if (s2Terms.length > 0) {
+    const X2 = train.map((d) => s2Terms.map((t) => t.fn(d)));
+    const r1 = train.map((d, ti) => target[ti] - (base(d) + (catAdj.get(d.cat) ?? 0)));
+    s2Slopes = fitHuberIRLS(
+      X2,
+      r1,
+      cfg.huber_delta,
+      0,
+      cfg.huber_iters,
+      s2Terms.map((t) => t.ridge),
+    );
+  }
+  const s2Adj = (d) => {
+    let s = 0;
+    for (let j = 0; j < s2Terms.length; j++) s += (s2Slopes[j] ?? 0) * s2Terms[j].fn(d);
+    return s;
+  };
   return {
     beta,
-    divSlope,
+    s2Slopes,
     predict: (d) =>
       d.logTvl +
       clamp(
-        base(d) + (catAdj.get(d.cat) ?? 0) + divSlope * divNegSqFeature(d.g180, d.chainG180, d.chainsN),
+        base(d) + (catAdj.get(d.cat) ?? 0) + s2Adj(d),
         Math.log(cfg.ratio_floor),
         Math.log(cfg.ratio_cap),
       ),
@@ -209,7 +251,7 @@ function testValSpec(spec) {
     looN: looP.length,
     wfN: wfP.length,
     fullBeta: fullFit.beta,
-    fullDivSlope: fullFit.divSlope,
+    fullS2Slopes: fullFit.s2Slopes,
   };
 }
 
@@ -325,13 +367,14 @@ const valTvlCat = testValSpec({ tvl: true, cat: true });
 const valEra = testValSpec({ tvl: true, eraInter: true, cat: true });
 const valRev4 = testValSpec({ tvl: true, eraInter: true, g180: true, cat: true });
 const valRev6 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true });
-const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true };
+const valRev7 = testValSpec({ tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true });
+const valKeptSpec = { tvl: true, eraInter: true, g180: true, breadth: true, chainAge: true, yWinsor: true, cat: true, divNegSq: true, revTvlW: true, feesGro: true };
 const valKept = testValSpec(valKeptSpec);
 const valPlusGrowth = testValSpec({ ...valKeptSpec, growth: true });
 const valPlusAge = testValSpec({ ...valKeptSpec, age: true });
 const valPlusChains = testValSpec({ ...valKeptSpec, chains: true });
 
-console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 div r=${cfg.hist_div_ridge})`);
+console.log(`\n[1] CONDITIONAL LAUNCH VALUATION — E[MCap | token launches] (119 non-CEX live peers, 44 walk-forward; Stage-1 Huber d=1.0, r=[0,1,20,${cfg.hist_growth_ridge},${cfg.hist_breadth_ridge},${cfg.hist_chain_age_ridge}], yW=[${cfg.val_y_winsor_lo},${cfg.val_y_winsor_hi}] + Stage-2 r=[${cfg.hist_div_ridge},${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge}])`);
 console.log('Term / Model                         | WF medX (lift)  WF gmX  WF R2  | LOO medX (lift) LOO gmX LOO R2 | Verdict');
 console.log('-------------------------------------+--------------------------------+--------------------------------+--------');
 for (const [label, r, verdict] of [
@@ -341,7 +384,8 @@ for (const [label, r, verdict] of [
   ['+ Era>=2023 x TVL slope (r=20)', valEra, 'KEEP'],
   ['+ 180d TVL growth g180 (r=50)', valRev4, 'KEEP'],
   [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valRev6, 'KEEP'],
-  [`+ Stage-2 -min(0,div)^2 (r=${cfg.hist_div_ridge})`, valKept, 'KEEP'],
+  [`+ Stage-2 -min(0,div)^2 (r=${cfg.hist_div_ridge})`, valRev7, 'KEEP'],
+  [`+ Stage-2 revtvlW+feesgro (r=${cfg.hist_rev_tvl_ridge},${cfg.hist_fees_gro_ridge})`, valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],
@@ -355,7 +399,7 @@ for (const [label, r, verdict] of [
   );
 }
 console.log(
-  `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}], divSlope=${valKept.fullDivSlope.toFixed(4)} | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
+  `Full valuation beta: [${valKept.fullBeta.map((b) => b.toFixed(4)).join(', ')}], Stage-2 slopes=[${valKept.fullS2Slopes.map((b) => b.toFixed(4)).join(', ')}] | Empirical LOO 50% PI multipliers: [x${valKept.loo.pi50Low.toFixed(2)}, x${valKept.loo.pi50High.toFixed(2)}]`,
 );
 
 const oddsBase = testOddsSpec({});
@@ -390,16 +434,16 @@ console.log(
 
 // Hard assertions: kept models must beat baseline and every dropped valuation term must fail at least one test.
 const assertions = [
-  ['Kept val WF medX < base', valKept.wf.medX < valBase.wf.medX],
-  ['Kept val LOO medX < base', valKept.loo.medX < valBase.loo.medX],
-  ['Kept val improves over TVL-only on BOTH WF and LOO medX', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX],
-  ['Kept val improves over TVL-only on BOTH WF and LOO R2', valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
-  ['Dropped val growth fails WF medX, WF R2 & LOO R2', valPlusGrowth.wf.medX > valKept.wf.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
+  ['Kept val WF medX < base & improves vs Rev7', valKept.wf.medX < valBase.wf.medX && valKept.wf.medX < valRev7.wf.medX],
+  ['Kept val LOO medX < base & improves vs Rev7', valKept.loo.medX < valBase.loo.medX && valKept.loo.medX < valRev7.loo.medX],
+  ['Kept val zero-regression gmX & R2 vs Rev7 (WF & LOO)', valKept.wf.gmX <= valRev7.wf.gmX && valKept.loo.gmX <= valRev7.loo.gmX && valKept.wf.r2 >= valRev7.wf.r2 && valKept.loo.r2 >= valRev7.loo.r2],
+  ['Kept val improves over TVL-only on BOTH WF and LOO medX & R2', valKept.wf.medX < valTvl.wf.medX && valKept.loo.medX < valTvl.loo.medX && valKept.wf.r2 > valTvl.wf.r2 && valKept.loo.r2 > valTvl.loo.r2],
+  ['Dropped val growth fails LOO medX, WF R2 & LOO R2', valPlusGrowth.loo.medX > valKept.loo.medX && valPlusGrowth.wf.r2 < valKept.wf.r2 && valPlusGrowth.loo.r2 < valKept.loo.r2],
   // Age stays DROPPED on the chronological walk-forward test & LOO R2; LOO medX alone does not save it.
   ['Dropped val age fails WF medX & LOO R2', valPlusAge.wf.medX > valKept.wf.medX && valPlusAge.loo.r2 < valKept.loo.r2],
   ['Dropped val chains fails WF medX & LOO R2', valPlusChains.wf.medX > valKept.wf.medX && valPlusChains.loo.r2 < valKept.loo.r2],
   ['Kept odds improves WF Brier & LOO Brier vs base', oddsKept.wf.brier < oddsBase.wf.brier && oddsKept.loo.brier < oddsBase.loo.brier],
-  ['Kept odds 4 snapshot slopes positive, val g180<=0 & divSlope>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullDivSlope > 0],
+  ['Kept odds 4 snapshot slopes positive, val g180<=0 & all 3 Stage-2 slopes>0', oddsKept.fullBeta.slice(1, 5).every((b) => b > 0) && valKept.fullBeta[3] <= 0 && valKept.fullS2Slopes.length === 3 && valKept.fullS2Slopes.every((b) => b > 0)],
   ['Dropped odds growth slope is negative artifact', oddsPlusGrowth.fullBeta.at(-1) < 0],
 ];
 

@@ -29,19 +29,22 @@
  const fHr = (n) => `${n > 0 ? '+' : n < 0 ? '-' : ''}$${Math.abs(n).toFixed(2)}/hr`;
  const fUsdS = (n) => `${n < 0 ? '-' : n > 0 ? '+' : ''}$${Math.abs(n).toFixed(2)}`;
  const fmtExp = (row) => {
-  const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0, b3 = FIT.val_hist_slope || 0, b4 = FIT.val_breadth_slope || 0, b5 = FIT.val_chain_age_slope || 0, b6 = FIT.val_div_slope || 0;
+  const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0, b3 = FIT.val_hist_slope || 0, b4 = FIT.val_breadth_slope || 0, b5 = FIT.val_chain_age_slope || 0, b6 = FIT.val_div_slope || 0, b7 = FIT.val_rev_tvl_slope || 0, b8 = FIT.val_fees_gro_slope || 0;
   const tm = (b, n) => (b ? ` ${b < 0 ? '-' : '+'} ${Math.abs(b).toFixed(4)}·${n}` : '');
-  const hT = tm(b3, 'z(g180)') + tm(b4, `z(g180·ch^${FIT.val_breadth_exp || 0.6})`) + tm(b5, 'z(cg180·ln1p(age))') + tm(b6, 'div²₋');
+  const h1 = tm(b3, 'z(g180)') + tm(b4, `z(g180·ch^${FIT.val_breadth_exp || 0.6})`) + tm(b5, 'z(cg180·ln1p(age))');
+  const h2 = tm(b6, 'div²₋') + tm(b7, 'z(rev/TVL)') + tm(b8, 'z(feeGro)');
   if (row) {
    const era = row.listed_at != null && row.listed_at >= FIT.val_era_cutoff ? 1 : 0, sl = b1 + era * b2;
-   const gTag = row.hist_g180 != null ? `g180=${row.hist_g180 >= 0 ? '+' : ''}${row.hist_g180.toFixed(2)}` : 'g180=med';
-   const cTag = row.hist_chain_g180 != null ? `cg=${row.hist_chain_g180 >= 0 ? '+' : ''}${row.hist_chain_g180.toFixed(2)}` : 'cg=med';
-   return `exp(${FIT.val_intercept} ${sl < 0 ? '-' : '+'} ${Math.abs(sl).toFixed(4)}·ln(TVL/$50M)${hT}) [${era ? '>=2023' : '<2023'}, ${gTag}, ${cTag}]`;
+   const gT = row.hist_g180 != null ? `g180=${row.hist_g180 >= 0 ? '+' : ''}${row.hist_g180.toFixed(2)}` : 'g180=med';
+   const cT = row.hist_chain_g180 != null ? `cg=${row.hist_chain_g180 >= 0 ? '+' : ''}${row.hist_chain_g180.toFixed(2)}` : 'cg=med';
+   const rT = row.hist_rev_tvl != null ? `rt=${row.hist_rev_tvl.toFixed(2)}` : 'rt=0';
+   const fT = row.hist_fees_gro != null ? `fg=${row.hist_fees_gro.toFixed(2)}` : 'fg=0';
+   return `exp(${FIT.val_intercept} ${sl < 0 ? '-' : '+'} ${Math.abs(sl).toFixed(4)}·ln(TVL/$50M)${h1}${h2}) [${era ? '>=2023' : '<2023'}, ${gT}, ${cT}, ${rT}, ${fT}]`;
   }
   const head = b1 < 0 && b2 < 0
    ? `exp(${FIT.val_intercept} - (${Math.abs(b1)}+${Math.abs(b2)}·I[>=2023])·ln(TVL/$50M)`
    : `exp(${FIT.val_intercept} + (${b1}${b2 < 0 ? '' : '+'}${b2}·I[>=2023])·ln(TVL/$50M)`;
-  return hT ? `${head}\n ${hT})` : `${head})`;
+  return h1 || h2 ? `${head}${h1 ? `\n ${h1}` : ''}${h2 ? `\n ${h2}` : ''})` : `${head})`;
  };
 
  const dirty = () => Math.abs(S.sbTvl - FIT.val_tvl_slope) > 1e-4 || Math.abs(S.sbCat - 1) > 1e-4 || Math.abs(S.sbHor - FIT.horizon_days) > 1 || Math.abs(S.sbPar - FIT.parent_tokenless_prob) > 1e-4;
@@ -78,28 +81,18 @@
 
  function readHash() {
   const p = new URLSearchParams(window.location.hash.replace(/^#/, ''));
-  if (p.get('tab')) S.tab = p.get('tab');
-  if (p.get('q')) S.q = p.get('q');
-  if (p.get('cat')) S.cat = p.get('cat');
-  if (p.get('chain')) S.chain = p.get('chain');
+  for (const k of ['tab', 'q', 'cat', 'chain', 'verdict', 'sort']) if (p.get(k)) S[k] = p.get(k);
   if (p.get('minTvl')) S.minTvl = Number(p.get('minTvl')) || 0;
-  if (p.get('verdict')) S.verdict = p.get('verdict');
   if (p.get('wl') === '1') S.wlOnly = true;
-  if (p.get('sort')) S.sort = p.get('sort');
   if (p.get('dir') === '1' || p.get('dir') === '-1') S.dir = Number(p.get('dir'));
   if (p.get('p')) S.selected = p.get('p');
   if (p.get('sandbox') === '1') S.showSandbox = true;
  }
  function writeHash() {
-  const p = new URLSearchParams();
-  if (S.tab !== 'pre-token') p.set('tab', S.tab);
-  if (S.q) p.set('q', S.q);
-  if (S.cat !== 'all') p.set('cat', S.cat);
-  if (S.chain !== 'all') p.set('chain', S.chain);
+  const p = new URLSearchParams(), def = { tab: 'pre-token', q: '', cat: 'all', chain: 'all', verdict: 'all', sort: 'implied' };
+  for (const [k, d] of Object.entries(def)) if (S[k] !== d) p.set(k, S[k]);
   if (S.minTvl > 0) p.set('minTvl', String(S.minTvl));
-  if (S.verdict !== 'all') p.set('verdict', S.verdict);
   if (S.wlOnly) p.set('wl', '1');
-  if (S.sort !== 'implied') p.set('sort', S.sort);
   if (S.dir !== -1) p.set('dir', String(S.dir));
   if (S.selected) p.set('p', S.selected);
   if (S.showSandbox) p.set('sandbox', '1');
@@ -174,14 +167,14 @@
   const top = all[0], strong = all.filter((r) => r.farm.verdict === 'Strong +EV').length, pos = all.filter((r) => r.farm.verdict === 'Positive +EV').length;
   const dMap = {};
   (HO.val_dropped_stats || []).forEach((x) => { dMap[x.key] = x; });
-  const wfBase = `x${HO.val_wf_med_x.toFixed(2)}`;
+  const wfBase = `x${HO.val_wf_med_x.toFixed(2)}`, looBase = `x${HO.val_loo_med_x.toFixed(2)}`;
   const rejText = dMap.growth && dMap.age
-   ? `7d growth (WF ${wfBase}→x${dMap.growth.wf_med_x.toFixed(2)}), Age-in-Val (WF ${wfBase}→x${dMap.age.wf_med_x.toFixed(2)})`
+   ? `7d growth (LOO ${looBase}→x${dMap.growth.loo_med_x.toFixed(2)}, R²↓), Age-in-Val (WF ${wfBase}→x${dMap.age.wf_med_x.toFixed(2)})`
    : HO.val_dropped.join(', ');
   return E('section', { class: 'hero' },
    E('div', null,
     E('h1', { text: 'Pre-Token Launch Valuation, Odds & Costed Farm Terminal' }),
-    E('p', { class: 'hero-sub', text: `Product rule applied before ranking: ${INT.rankable_total} pre-token candidates ranked by fitted Huber TVL/era-slope + 180d TVL/breadth/chain-age/neg-div (y-winsor [p5,p95]) + category residual valuation (${FIT.live_calib_count} non-CEX peers) × L2 logistic 2y odds (${FIT.odds_clean_count} peers). Terms kept only on blind held-out lift.` }),
+    E('p', { class: 'hero-sub', text: `Product rule before ranking: ${INT.rankable_total} pre-token rows by Huber TVL/era + 180d TVL/breadth/chain-age + Stage-2 neg-div/rev-TVL/fees-gro (yW[p5,p95]) + CatRes (${FIT.live_calib_count} peers) × L2 logit 2y odds (${FIT.odds_clean_count} peers). Terms kept only on blind lift.` }),
     E('div', { class: 'ho-strip', 'aria-label': 'Held-out validation summary' },
      E('span', { class: 'ho-pill' }, 'Walk-Forward: ', E('b', { text: `x${HO.val_wf_med_x.toFixed(2)}` }), ` vs x${HO.val_wf_flat_med_x.toFixed(2)} flat (${HO.val_wf_lift.toFixed(2)}×, n=${HO.val_wf_n})`),
      E('span', { class: 'ho-pill cy' }, 'Odds AUC: ', E('b', { text: `${HO.odds_loo_auc.toFixed(3)} LOO` }), ` / ${HO.odds_wf_auc.toFixed(3)} WF`),
@@ -232,8 +225,8 @@
   };
   return E('section', { class: 'sandbox-panel', 'aria-label': 'Interactive model sandbox' },
    E('div', { class: 'sandbox-head' },
-    E('h3', { text: 'Interactive Model Sandbox — live client-side recomputation of valuation, odds & farm verdicts (zero network)' }),
-    E('button', { type: 'button', class: 'btn-ghost', text: 'Reset to fitted defaults', onclick: () => { S.sbTvl = FIT.val_tvl_slope; S.sbCat = 1; S.sbHor = FIT.horizon_days; S.sbPar = FIT.parent_tokenless_prob; render(); } }),
+    E('h3', { text: 'Interactive Model Sandbox — live client-side recomputation (zero network)' }),
+    E('button', { type: 'button', class: 'btn-ghost', text: 'Reset defaults', onclick: () => { S.sbTvl = FIT.val_tvl_slope; S.sbCat = 1; S.sbHor = FIT.horizon_days; S.sbPar = FIT.parent_tokenless_prob; render(); } }),
    ),
    E('div', { class: 'slider-grid' },
     sl('TVL Elasticity Slope', -0.8, -0.1, 0.02, S.sbTvl, (v) => v.toFixed(2), (v) => { S.sbTvl = v; }),
@@ -358,8 +351,8 @@
      E('thead', null, E('tr', null, E('th', { text: 'Model & Blind Test' }), E('th', { class: 'num', text: 'Walk-Forward' }), E('th', { class: 'num', text: 'Leave-One-Out' }), E('th', { text: 'Kept / Rejected Decision' }))),
      E('tbody', null,
       E('tr', null, E('td', { text: 'Flat 0.25x TVL (base)' }), E('td', { class: 'num', text: `x${HO.val_wf_flat_med_x.toFixed(2)} (R² -0.238)` }), E('td', { class: 'num', text: `x${HO.val_loo_flat_med_x.toFixed(2)} (R² -0.037)` }), E('td', { text: 'Baseline reference' })),
-      E('tr', null, E('td', { text: 'Fitted Val (7-feat+yW+Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
-      E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens WF medX & WF/LOO R² (Odds neg. beta)' })),
+      E('tr', null, E('td', { text: 'Fitted Val (9-feat+yW+Cat)' }), E('td', { class: 'num pos', text: `x${HO.val_wf_med_x.toFixed(2)} (${HO.val_wf_lift.toFixed(2)}×)` }), E('td', { class: 'num pos', text: `x${HO.val_loo_med_x.toFixed(2)} (${HO.val_loo_lift.toFixed(2)}×)` }), E('td', { text: `KEPT: ${HO.val_kept.join(', ')}` })),
+      E('tr', null, E('td', { text: '+ 7d TVL growth (Val)' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.wf_med_x.toFixed(2)} (R² ${gSt.wf_r2.toFixed(3)})` : 'Degraded WF' }), E('td', { class: 'num neg', text: gSt ? `x${gSt.loo_med_x.toFixed(2)} (R² ${gSt.loo_r2.toFixed(3)})` : 'Degraded LOO' }), E('td', { text: 'REJECTED: worsens LOO medX & WF/LOO R² (Odds neg. beta)' })),
       E('tr', null, E('td', { text: '+ Age / Chains (Val)' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.wf_med_x.toFixed(2)} / x${cSt.wf_med_x.toFixed(2)}` : 'Degraded WF' }), E('td', { class: 'num neg', text: aSt && cSt ? `x${aSt.loo_med_x.toFixed(2)} / x${cSt.loo_med_x.toFixed(2)}` : 'Degraded LOO' }), E('td', { text: 'REJECTED in Val (Listed age & Chains KEPT in Odds)' })),
       E('tr', null, E('td', { text: 'Token Odds (442 clean)' }), E('td', { class: 'num pos', text: `AUC ${HO.odds_wf_auc.toFixed(3)} · B ${HO.odds_wf_brier.toFixed(3)}` }), E('td', { class: 'num pos', text: `AUC ${HO.odds_loo_auc.toFixed(3)} · B ${HO.odds_loo_brier.toFixed(3)}` }), E('td', { text: 'Odds: Age, Cat, TVL, Chains, 180d TVL · DROPPED: 7d' })),
      ),
@@ -392,6 +385,8 @@
   const parity = !dirty() && orig && chk.implied_value_usd === orig.implied_value_usd;
   const f = row.farm, steps = row.steps || [];
 
+  const vb = (l, v, c) => E('div', { class: 'vb-cell' }, E('span', { text: l }), E('b', { class: c || null, text: v }));
+  const sb = (l, v, s, c) => E('div', { class: 'stat-box' }, E('span', { text: l }), E('b', { class: c || null, text: v }), E('small', { text: s }));
   drawer.textContent = '';
   drawer.appendChild(E('div', { class: 'drawer-inner' },
    E('div', { class: 'drawer-head' },
@@ -403,10 +398,10 @@
     E('button', { type: 'button', class: 'drawer-close', text: 'Close [Esc]', onclick: () => drawer.close() }),
    ),
    E('div', { class: 'stat-strip' },
-    E('div', { class: 'stat-box' }, E('span', { text: 'Implied EV' }), E('b', { class: 'pos', text: fUsd(row.implied_value_usd) }), E('small', { text: `50% PI ${fSh(row.range_low_usd)}–${fSh(row.range_high_usd)}` })),
-    E('div', { class: 'stat-box' }, E('span', { text: 'Cond. Launch Val' }), E('b', { text: fUsd(row.cond_value_usd) }), E('small', { text: `eff ${row.effective_multiple.toFixed(3)}x TVL` })),
-    E('div', { class: 'stat-box' }, E('span', { text: '2y Launch Odds' }), E('b', { class: 'cy', text: fPr(row.launch_odds) }), E('small', { text: row.age_days != null ? `age ${row.age_days}d` : `default ${row.age_used_days}d` })),
-    E('div', { class: 'stat-box' }, E('span', { text: 'Snapshot TVL' }), E('b', { text: fUsd(row.tvl_usd) }), E('small', { text: `7d ${fPct(row.change_7d)}` })),
+    sb('Implied EV', fUsd(row.implied_value_usd), `50% PI ${fSh(row.range_low_usd)}–${fSh(row.range_high_usd)}`, 'pos'),
+    sb('Cond. Launch Val', fUsd(row.cond_value_usd), `eff ${row.effective_multiple.toFixed(3)}x TVL`),
+    sb('2y Launch Odds', fPr(row.launch_odds), row.age_days != null ? `age ${row.age_days}d` : `default ${row.age_used_days}d`, 'cy'),
+    sb('Snapshot TVL', fUsd(row.tvl_usd), `7d ${fPct(row.change_7d)}`),
    ),
    E('section', { class: 'drawer-sec' },
     E('h3', null, E('span', { text: 'Auditable Valuation & Launch Odds Breakdown' }), E('span', { class: 'parity-note', text: parity ? '✓ Matches board.json exact $' : 'Sandbox live estimate' })),
@@ -422,16 +417,20 @@
    E('section', { class: 'drawer-sec' },
     E('h3', null, E('span', { text: `Costed Farm Verdict — Gas Basis (${f.primary_chain} · ${f.hold_days}d Hold)` }), vBadge(f.verdict)),
     E('div', { class: 'verdict-box' },
-     E('div', { class: 'vb-cell' }, E('span', { text: 'Net $/Hour' }), E('b', { class: f.net_per_hour > 0 ? 'pos' : f.net_per_hour < 0 ? 'neg' : 'flat', text: fHr(f.net_per_hour) })),
-     E('div', { class: 'vb-cell' }, E('span', { text: 'Gas Break-Even' }), E('b', { text: fEx(f.breakeven_deposit_usd) })),
-     E('div', { class: 'vb-cell' }, E('span', { text: 'Tier / Gas Range' }), E('b', { text: `$${f.deposit_usd.toLocaleString('en-US')} / $${f.gas_low_usd.toFixed(2)}–$${f.gas_high_usd.toFixed(2)}` })),
-     E('div', { class: 'vb-cell' }, E('span', { text: 'Active / Gross EV' }), E('b', { text: `${f.active_hours.toFixed(2)}h / $${f.gross_ev_usd.toFixed(2)}` })),
+     vb('Net $/Hour', fHr(f.net_per_hour), f.net_per_hour > 0 ? 'pos' : f.net_per_hour < 0 ? 'neg' : 'flat'),
+     vb('Gas Break-Even', fEx(f.breakeven_deposit_usd)),
+     vb('Tier / Gas Range', `$${f.deposit_usd.toLocaleString('en-US')} / $${f.gas_low_usd.toFixed(2)}–$${f.gas_high_usd.toFixed(2)}`),
+     vb('Active / Gross EV', `${f.active_hours.toFixed(2)}h / $${f.gross_ev_usd.toFixed(2)}`),
     ),
     E('p', {
      class: 'verdict-note',
-     text: f.net_per_hour > 0
-      ? `Gas-Basis +EV (assumes vault base APY >= 4.5% offsets $${f.capital_drag_usd.toFixed(2)} capital drag; idle-capital net: ${fUsdS(f.idle_capital_net_usd != null ? f.idle_capital_net_usd : f.net_after_gas_usd - f.capital_drag_usd)}). From $${f.deposit_usd.toLocaleString('en-US')} tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps, 5% TVL-pro-rata benchmark. Not an airdrop promise.`
-      : `Gas-Basis ${f.verdict} (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}; idle-capital net: ${fUsdS(f.idle_capital_net_usd != null ? f.idle_capital_net_usd : f.net_after_gas_usd - f.capital_drag_usd)}). From $${f.deposit_usd.toLocaleString('en-US')} tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps, 5% TVL-pro-rata benchmark.`,
+     text: (() => {
+      const idle = fUsdS(f.idle_capital_net_usd ?? f.net_after_gas_usd - f.capital_drag_usd);
+      const base = `From $${f.deposit_usd.toLocaleString('en-US')} tier, $${f.gas_mid_usd.toFixed(2)} mid gas, ${f.active_hours.toFixed(2)}h active steps, 5% TVL-pro-rata benchmark.`;
+      return f.net_per_hour > 0
+       ? `Gas-Basis +EV (assumes vault base APY >= 4.5% offsets $${f.capital_drag_usd.toFixed(2)} capital drag; idle-capital net: ${idle}). ${base} Not an airdrop promise.`
+       : `Gas-Basis ${f.verdict} (4.5% APR capital drag: $${f.capital_drag_usd.toFixed(2)}; idle-capital net: ${idle}). ${base}`;
+     })(),
     }),
     E('div', { class: 'tier-table' },
      E('div', { class: 'tier-head' }, E('span', { text: 'Deposit tier' }), E('span', { class: 'num', text: 'Gross EV' }), E('span', { class: 'num', text: 'Net $/hr' }), E('span', { text: 'Verdict' })),

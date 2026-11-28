@@ -12,7 +12,7 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MODEL_CONFIG, boardIssue, buildRadar, dataScript, parseHistoryFeatures, parseSnapshot } from './lib/model.ts';
+import { MODEL_CONFIG, boardIssue, buildRadar, dataScript, parseFeesFeatures, parseHistoryFeatures, parseSnapshot } from './lib/model.ts';
 import { buildDossier } from './vendor/makefun-board.ts';
 
 const here = fileURLToPath(new URL('.', import.meta.url));
@@ -42,7 +42,9 @@ const out = arg('output', process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 const snapshot = parseSnapshot(readFileSync(inputFile, 'utf8'));
 const historyFile = join(here, 'data', 'history.json');
 const history = existsSync(historyFile) ? parseHistoryFeatures(readFileSync(historyFile, 'utf8')) : undefined;
-const { board, radar } = buildRadar(snapshot, MODEL_CONFIG, history);
+const feesFile = join(here, 'data', 'history-fees.json');
+const fees = existsSync(feesFile) ? parseFeesFeatures(readFileSync(feesFile, 'utf8')) : undefined;
+const { board, radar } = buildRadar(snapshot, MODEL_CONFIG, history, fees);
 const issue = boardIssue(board, snapshot);
 if (issue !== null) {
   process.stderr.write(`token radar: board failed gate validation: ${issue}\n`);
