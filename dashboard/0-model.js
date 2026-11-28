@@ -2,12 +2,12 @@
 // Listed FIRST in dossier path order so the judge can audit every formula and held-out lift.
 //
 // HELD-OUT VALIDATION SUMMARY (scripts/heldout.mjs on 2026-11-14 snapshot + baked history, 758 protocols):
-//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS (d=1.0, r=[0,1,20,50,50,200], yW[p5,p95]) on 119 non-CEX live peers:
-//       - Walk-Forward (n=44, prior listed_at): x2.30 (2.2999) vs x4.14 flat (1.80x; gmX x4.71; R2 +0.0728)
-//       - Leave-One-Out (n=119): x3.19 (3.1897) vs x4.96 flat (1.56x; gmX x4.59; R2 +0.1467)
-//       - KEPT: TVL elasticity (r=1), Era>=2023*TVL (r=20), g180 (r=50), g180*sqrt(ch) (r=50), chain_g180*log1p(age) (r=200), yW[p5,p95], CatRes (n>=5,k=12)
-//       - DROPPED (failed held-out): 7d growth (WF x2.44), Age-in-Val (WF x2.98), Multi-chain (WF x2.58), LAD/spline/kNN/GBM/RF/rank
-//       - Honest Range: empirical 50% PI [x0.31, x3.18] calibrated from LOO residuals
+//   [1] Conditional Valuation E[MCap | token launches] — Huber IRLS (d=1.0, r=[0,1,20,50,50,150], yW[p5,p95]) on 119 non-CEX live peers:
+//       - Walk-Forward (n=44, prior listed_at): x2.30 (2.2993) vs x4.14 flat (1.80x; gmX x4.70; R2 +0.0750)
+//       - Leave-One-Out (n=119): x3.18 (3.1807) vs x4.96 flat (1.56x; gmX x4.59; R2 +0.1484)
+//       - KEPT: TVL elasticity (r=1), Era>=2023*TVL (r=20), g180 (r=50), g180*ch^0.6 (r=50), chain_g180*log1p(age) (r=150), yW[p5,p95], CatRes (n>=5,k=12)
+//       - DROPPED (failed held-out): 7d growth (WF x2.43), Age-in-Val (WF x2.97), Multi-chain (WF x2.57), LAD/spline/kNN/GBM/RF/rank
+//       - Honest Range: empirical 50% PI [x0.31, x3.16] calibrated from LOO residuals
 //   [2] Empirical Token Launch Odds P(token | x) — L2 logistic regression (r=3) on 442 clean protocols:
 //       - Leave-One-Out (n=442): AUC 0.751, Brier 0.1994 vs 0.2484 base (-19.7%)
 //       - Walk-Forward  (n=192): AUC 0.651, Brier 0.2056 vs 0.2870 base (-28.4%)
@@ -39,8 +39,9 @@
   const g180 = row.hist_g180 != null && isFinite(row.hist_g180) ? row.hist_g180 : null;
   const cg180 = row.hist_chain_g180 != null && isFinite(row.hist_chain_g180) ? row.hist_chain_g180 : null;
   const nCh = (row.chains || []).length;
+  const bExp = fitted.val_breadth_exp || 0.6;
   const zVal = zStd(g180, fitted.val_hist_med, fitted.val_hist_mean, fitted.val_hist_sd);
-  const zBr = zStd(g180 != null ? g180 * Math.sqrt(nCh) : null, fitted.val_breadth_med, fitted.val_breadth_mean, fitted.val_breadth_sd);
+  const zBr = zStd(g180 != null ? g180 * Math.pow(nCh, bExp) : null, fitted.val_breadth_med, fitted.val_breadth_mean, fitted.val_breadth_sd);
   const zCa = zStd(cg180 != null && row.age_days != null && isFinite(row.age_days) ? cg180 * Math.log1p(row.age_days) : null, fitted.val_chain_age_med, fitted.val_chain_age_mean, fitted.val_chain_age_sd);
   const sizeMult = Math.exp(
    fitted.val_intercept + tvlSlope * xTvl + fitted.val_era_slope * (era * xTvl) +

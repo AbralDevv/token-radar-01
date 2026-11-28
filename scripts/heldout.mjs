@@ -82,7 +82,7 @@ function fitValSpec(train, spec) {
   const ages = train.filter((d) => d.age !== null).map((d) => d.age);
   const medAge = ages.length > 0 ? median(ages) : 365;
   const hs = histStats(train.map((d) => d.g180));
-  const bs = histStats(train.map((d) => breadthFeature(d.g180, d.chainsN)));
+  const bs = histStats(train.map((d) => breadthFeature(d.g180, d.chainsN, cfg.hist_breadth_exp)));
   const cas = histStats(train.map((d) => chainAgeFeature(d.chainG180, d.age)));
   const rVec = [0];
   if (spec.tvl) rVec.push(cfg.huber_ridge);
@@ -99,7 +99,7 @@ function fitValSpec(train, spec) {
     if (spec.tvl) v.push(xTvl);
     if (spec.eraInter) v.push(isPostEra(d.listed_at, cfg.era_cutoff) * xTvl);
     if (spec.g180) v.push(stdHist(d.g180, hs));
-    if (spec.breadth) v.push(stdHist(breadthFeature(d.g180, d.chainsN), bs));
+    if (spec.breadth) v.push(stdHist(breadthFeature(d.g180, d.chainsN, cfg.hist_breadth_exp), bs));
     if (spec.chainAge) v.push(stdHist(chainAgeFeature(d.chainG180, d.age), cas));
     if (spec.growth) v.push(d.g7log);
     if (spec.age) v.push(Math.log1p(d.age ?? medAge) - Math.log1p(365));
@@ -312,7 +312,7 @@ for (const [label, r, verdict] of [
   ['+ Category residual (n>=5, k=12)', valTvlCat, 'KEEP'],
   ['+ Era>=2023 x TVL slope (r=20)', valEra, 'KEEP'],
   ['+ 180d TVL growth g180 (r=50)', valRev4, 'KEEP'],
-  ['+ g180*sqrt(ch)+ch_g180*age+yW', valKept, 'KEEP'],
+  [`+ g180*ch^${cfg.hist_breadth_exp}+ch_g180*age+yW`, valKept, 'KEEP'],
   ['+ 7d TVL growth (tested)', valPlusGrowth, 'DROP'],
   ['+ Listed age (tested)', valPlusAge, 'DROP'],
   ['+ Multi-chain breadth (tested)', valPlusChains, 'DROP'],

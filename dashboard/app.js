@@ -31,7 +31,7 @@
  const fmtExp = (row) => {
   const b1 = dirty() ? S.sbTvl : FIT.val_tvl_slope, b2 = FIT.val_era_slope || 0, b3 = FIT.val_hist_slope || 0, b4 = FIT.val_breadth_slope || 0, b5 = FIT.val_chain_age_slope || 0;
   const tm = (b, n) => (b ? ` ${b < 0 ? '-' : '+'} ${Math.abs(b).toFixed(4)}·${n}` : '');
-  const hT = tm(b3, 'z(g180)') + tm(b4, 'z(g180·√ch)') + tm(b5, 'z(cg180·ln1p(age))');
+  const hT = tm(b3, 'z(g180)') + tm(b4, `z(g180·ch^${FIT.val_breadth_exp || 0.6})`) + tm(b5, 'z(cg180·ln1p(age))');
   if (row) {
    const era = row.listed_at != null && row.listed_at >= FIT.val_era_cutoff ? 1 : 0, sl = b1 + era * b2;
    const gTag = row.hist_g180 != null ? `g180=${row.hist_g180 >= 0 ? '+' : ''}${row.hist_g180.toFixed(2)}` : 'g180=med';
